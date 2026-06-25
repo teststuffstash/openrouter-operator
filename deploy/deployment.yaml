@@ -20,10 +20,17 @@ spec:
           # imagePullSecret — the repo is public so public-package is simplest.
           image: ghcr.io/teststuffstash/openrouter-operator:latest
           imagePullPolicy: Always
+          # single instance, no peering/leases needed
+          args: ["--standalone"]
           env:
             - name: OPENROUTER_MANAGEMENT_KEY
               valueFrom:
                 secretKeyRef: { name: openrouter-management, key: OPENROUTER_MANAGEMENT_KEY }
+            # kopf's getpass.getuser() needs a name — the nonroot UID 65532 has no /etc/passwd entry
+            - name: LOGNAME
+              value: operator
+            - name: USER
+              value: operator
           ports:
             - { containerPort: 8080, name: health }
           livenessProbe:

@@ -34,7 +34,8 @@ spec:
                   minLength: 1
                 budgetUSD:
                   type: number
-                  exclusiveMinimum: 0
+                  minimum: 0
+                  exclusiveMinimum: true # k8s CRDs use draft-4: a bool paired with `minimum`
                   description: Spend cap in USD per reset window.
                 resetInterval:
                   type: string

@@ -1,0 +1,69 @@
+[project]
+name = "openrouter-operator"
+version = "0.1.0"
+description = "Kubernetes operator (kopf) that manages OpenRouter API keys, budgets, and guardrails as custom resources."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "kopf>=1.37",
+    "pydantic>=2",
+    "kubernetes>=29",
+]
+
+[project.optional-dependencies]
+# The official OpenRouter Python SDK (beta) — only the real adapter backend needs it. Kept optional
+# so the typed, tested core (and CI) never depend on the beta package resolving. Install for runtime:
+#   uv sync --extra sdk
+sdk = ["openrouter"]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+    "pre-commit",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+extend-select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+
+# Boundary libs without type info — treat as Any. Our code stays strict; these are the I/O edges.
+[[tool.mypy.overrides]]
+module = ["kopf.*", "kubernetes.*", "openrouter.*"]
+ignore_missing_imports = true
+
+# kopf/pytest decorators are untyped; relax just that one strict check in the glue + test modules.
+[[tool.mypy.overrides]]
+module = ["openrouter_operator.operator", "openrouter_operator.adapter", "openrouter_operator.k8s", "tests.*"]
+disallow_untyped_decorators = false
+
+[tool.coverage.run]
+source = ["src/openrouter_operator"]
+# I/O glue (SDK + k8s + kopf wiring) is the untested boundary; coverage measures the logic.
+omit = [
+    "src/openrouter_operator/operator.py",
+    "src/openrouter_operator/adapter.py",
+    "src/openrouter_operator/k8s.py",
+]
+
+[tool.coverage.report]
+fail_under = 95
+exclude_lines = ["pragma: no cover", "if __name__ == .__main__.", "\\.\\.\\.", "raise NotImplementedError"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openrouter_operator"]

@@ -1,0 +1,34 @@
+# CI — thin. All logic lives in `devbox run ci` (devbox.json + scripts/ci.sh), so the exact same
+# gate runs locally and here, with tool versions pinned by devbox, not this YAML. Runs on a
+# GitHub-hosted runner (self-contained — no dependency on the homelab ARC scaleset being scoped to
+# this repo yet; switch to runs-on: homelab-ephemeral once it is).
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Install devbox
+        uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          skip-nix-installation: "true"
+
+      - name: Lint + type-check + test (devbox run ci)
+        run: devbox run ci
+
+      - name: Secret scan (devbox run scan-secrets)
+        run: devbox run scan-secrets

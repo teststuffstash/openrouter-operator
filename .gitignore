@@ -1,0 +1,10 @@
+.idea/
+.claude/settings.local.json
+uploads/
+.devbox/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage

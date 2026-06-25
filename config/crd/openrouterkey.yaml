@@ -1,0 +1,52 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: openrouterkeys.openrouter.teststuff.net
+spec:
+  group: openrouter.teststuff.net
+  scope: Namespaced
+  names:
+    plural: openrouterkeys
+    singular: openrouterkey
+    kind: OpenRouterKey
+    shortNames: [orkey]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - { name: Project, type: string, jsonPath: .spec.project }
+        - { name: Budget, type: number, jsonPath: .spec.budgetUSD }
+        - { name: Reset, type: string, jsonPath: .spec.resetInterval }
+        - { name: Guardrail, type: string, jsonPath: .spec.guardrail }
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [project, budgetUSD]
+              properties:
+                project:
+                  type: string
+                  minLength: 1
+                budgetUSD:
+                  type: number
+                  exclusiveMinimum: 0
+                  description: Spend cap in USD per reset window.
+                resetInterval:
+                  type: string
+                  enum: [daily, weekly, monthly]
+                  default: weekly
+                  description: Budget reset cadence. weekly by default — caps a runaway agent's blast radius.
+                guardrail:
+                  type: string
+                  description: OpenRouter guardrail name to attach (e.g. only-free).
+                secretName:
+                  type: string
+                  description: k8s Secret to write the minted key into. Defaults to <project>-openrouter.
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

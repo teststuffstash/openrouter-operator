@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openrouter-operator
+  namespace: openrouter-operator
+  labels: { app: openrouter-operator }
+spec:
+  replicas: 1
+  strategy: { type: Recreate } # a single kopf operator instance (no leader election configured)
+  selector:
+    matchLabels: { app: openrouter-operator }
+  template:
+    metadata:
+      labels: { app: openrouter-operator }
+    spec:
+      serviceAccountName: openrouter-operator
+      containers:
+        - name: operator
+          # ghcr package must be PUBLIC (one-time, like the runner-group toggle) or add an
+          # imagePullSecret — the repo is public so public-package is simplest.
+          image: ghcr.io/teststuffstash/openrouter-operator:latest
+          imagePullPolicy: Always
+          env:
+            - name: OPENROUTER_MANAGEMENT_KEY
+              valueFrom:
+                secretKeyRef: { name: openrouter-management, key: OPENROUTER_MANAGEMENT_KEY }
+          ports:
+            - { containerPort: 8080, name: health }
+          livenessProbe:
+            httpGet: { path: /healthz, port: health }
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }

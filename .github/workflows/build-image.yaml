@@ -1,0 +1,35 @@
+# Build + push the operator image on the homelab Proxmox VM runner (real Docker; ADR-082).
+# amd64 native — the cluster nodes are amd64, and the operator is pure Python. ghcr push via the
+# job's GITHUB_TOKEN (no classic PAT needed in CI).
+name: build-image
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "src/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "Dockerfile"
+      - ".github/workflows/build-image.yaml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: [self-hosted, proxmox-vm]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build + push
+        run: |
+          IMG=ghcr.io/teststuffstash/openrouter-operator
+          docker build -t "$IMG:latest" -t "$IMG:${GITHUB_SHA::12}" .
+          docker push "$IMG:latest"
+          docker push "$IMG:${GITHUB_SHA::12}"

@@ -1,7 +1,6 @@
 # CI — thin. All logic lives in `devbox run ci` (devbox.json + scripts/ci.sh), so the exact same
-# gate runs locally and here, with tool versions pinned by devbox, not this YAML. Runs on a
-# GitHub-hosted runner (self-contained — no dependency on the homelab ARC scaleset being scoped to
-# this repo yet; switch to runs-on: homelab-ephemeral once it is).
+# gate runs locally and here, with tool versions pinned by devbox, not this YAML. Runs on the
+# homelab self-hosted runner (Actions Runner Controller, ephemeral laptop tier): homelab-ephemeral.
 name: CI
 
 on:
@@ -12,17 +11,24 @@ on:
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
+    runs-on: homelab-ephemeral
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Nix
+      # The ARC runner is a container with no systemd, so devbox's daemon-based Nix installer fails.
+      # Install Nix single-user (--no-daemon) ourselves, then tell devbox to reuse it. The slim
+      # runner image also lacks xz (the Nix installer needs it to unpack). See homelab docs/ci.md.
+      - name: Install xz (missing from the ARC runner image)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq xz-utils
+
+      - name: Install Nix (single-user)
         uses: cachix/install-nix-action@v31
         with:
+          install_options: --no-daemon
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Install devbox
+      - name: Install devbox (reuse the single-user Nix above)
         uses: jetify-com/devbox-install-action@v0.13.0
         with:
           skip-nix-installation: "true"

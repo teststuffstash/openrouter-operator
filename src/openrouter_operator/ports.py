@@ -2,7 +2,7 @@
 
 This is the whole point of the SDK-over-provider-http argument: the reconcile logic talks to this
 small, fully-typed Protocol — never the SDK directly — so it's trivially testable with a fake, and
-the real (beta) SDK lives behind a single adapter. Mock the port, not the API.
+the real SDK lives behind a single adapter. Mock the port, not the API.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ class KeyState:
     name: str
     limit: float
     reset_interval: ResetInterval
-    guardrail: str | None
 
 
 @dataclass(frozen=True)
@@ -33,16 +32,12 @@ class MintedKey:
 
 
 class OpenRouterPort(Protocol):
-    """The five operations the operator needs from OpenRouter. The adapter implements this."""
+    """The operations the operator needs from OpenRouter. The adapter implements this."""
 
     def get_key(self, key_hash: str) -> KeyState | None: ...
 
-    def create_key(
-        self, name: str, limit: float, reset: ResetInterval, guardrail: str | None
-    ) -> MintedKey: ...
+    def create_key(self, name: str, limit: float, reset: ResetInterval) -> MintedKey: ...
 
-    def update_key(
-        self, key_hash: str, limit: float, reset: ResetInterval, guardrail: str | None
-    ) -> None: ...
+    def update_key(self, key_hash: str, limit: float, reset: ResetInterval) -> None: ...
 
     def delete_key(self, key_hash: str) -> None: ...

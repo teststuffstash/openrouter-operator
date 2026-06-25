@@ -19,7 +19,6 @@ class Desired:
     name: str
     limit: float
     reset_interval: ResetInterval
-    guardrail: str | None
 
 
 @dataclass(frozen=True)
@@ -42,29 +41,26 @@ Plan = Create | Update | NoOp
 
 
 def desired_from_spec(spec: OpenRouterKeySpec) -> Desired:
+    # NB: spec.guardrail is intentionally not used yet — guardrails attach via a separate
+    # OpenRouter assign step, not at key create/update, so reconciling on it would loop forever.
     return Desired(
         name=spec.key_name(),
         limit=spec.budget_usd,
         reset_interval=spec.reset_interval,
-        guardrail=spec.guardrail,
     )
 
 
 def decide(desired: Desired, observed: KeyState | None) -> Plan:
     """Decide the action to reconcile `observed` toward `desired`.
 
-    - no key yet            -> Create
-    - budget/reset/guardrail drifted -> Update
-    - already correct        -> NoOp
+    - no key yet        -> Create
+    - budget/reset drifted -> Update
+    - already correct    -> NoOp
     """
     if observed is None:
         return Create(desired)
 
-    drifted = (
-        observed.limit != desired.limit
-        or observed.reset_interval != desired.reset_interval
-        or observed.guardrail != desired.guardrail
-    )
+    drifted = observed.limit != desired.limit or observed.reset_interval != desired.reset_interval
     if drifted:
         return Update(observed.hash, desired)
 

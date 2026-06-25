@@ -33,15 +33,8 @@ def _state(
     *,
     limit: float = 5.0,
     reset: ResetInterval = ResetInterval.weekly,
-    guardrail: str | None = "only-free",
 ) -> KeyState:
-    return KeyState(
-        hash="GK1",
-        name="sleep-tracking-agent",
-        limit=limit,
-        reset_interval=reset,
-        guardrail=guardrail,
-    )
+    return KeyState(hash="GK1", name="sleep-tracking-agent", limit=limit, reset_interval=reset)
 
 
 @pytest.mark.parametrize(
@@ -51,8 +44,6 @@ def _state(
         ("everything matches -> noop", _state(), NoOp),
         ("budget drift -> update", _state(limit=10.0), Update),
         ("reset drift -> update", _state(reset=ResetInterval.monthly), Update),
-        ("guardrail changed -> update", _state(guardrail="no-opus"), Update),
-        ("guardrail removed -> update", _state(guardrail=None), Update),
     ],
 )
 def test_decide(description: str, observed: KeyState | None, expected: type[Plan]) -> None:
@@ -68,7 +59,6 @@ def test_desired_from_spec_maps_fields() -> None:
     assert DESIRED.name == "sleep-tracking-agent"
     assert DESIRED.limit == 5.0
     assert DESIRED.reset_interval is ResetInterval.weekly
-    assert DESIRED.guardrail == "only-free"
 
 
 def test_spec_defaults_and_helpers() -> None:
@@ -95,14 +85,10 @@ class _FakePort:
     def get_key(self, key_hash: str) -> KeyState | None:
         return None
 
-    def create_key(
-        self, name: str, limit: float, reset: ResetInterval, guardrail: str | None
-    ) -> MintedKey:
+    def create_key(self, name: str, limit: float, reset: ResetInterval) -> MintedKey:
         return MintedKey(hash="GKnew", value="sk-or-v1-fake")
 
-    def update_key(
-        self, key_hash: str, limit: float, reset: ResetInterval, guardrail: str | None
-    ) -> None:
+    def update_key(self, key_hash: str, limit: float, reset: ResetInterval) -> None:
         return None
 
     def delete_key(self, key_hash: str) -> None:
@@ -112,5 +98,5 @@ class _FakePort:
 def test_fake_port_satisfies_protocol() -> None:
     port: OpenRouterPort = _FakePort()
     assert port.get_key("x") is None
-    minted = port.create_key("demo-agent", 1.0, ResetInterval.weekly, None)
+    minted = port.create_key("demo-agent", 1.0, ResetInterval.weekly)
     assert minted.value.startswith("sk-or-")

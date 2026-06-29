@@ -8,6 +8,7 @@ the real SDK lives behind a single adapter. Mock the port, not the API.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from .models import ResetInterval
@@ -15,12 +16,16 @@ from .models import ResetInterval
 
 @dataclass(frozen=True)
 class KeyState:
-    """Observed state of a runtime key on OpenRouter."""
+    """Observed state of a runtime key on OpenRouter.
+
+    `reset_interval` is `None` for a key minted with no reset window (an ephemeral session key) —
+    do NOT default it to weekly, or it perpetually reads as drifted against a no-reset desired.
+    """
 
     hash: str
     name: str
     limit: float
-    reset_interval: ResetInterval
+    reset_interval: ResetInterval | None
 
 
 @dataclass(frozen=True)
@@ -36,8 +41,14 @@ class OpenRouterPort(Protocol):
 
     def get_key(self, key_hash: str) -> KeyState | None: ...
 
-    def create_key(self, name: str, limit: float, reset: ResetInterval) -> MintedKey: ...
+    def create_key(
+        self,
+        name: str,
+        limit: float,
+        reset: ResetInterval | None,
+        expires_at: datetime | None = None,
+    ) -> MintedKey: ...
 
-    def update_key(self, key_hash: str, limit: float, reset: ResetInterval) -> None: ...
+    def update_key(self, key_hash: str, limit: float, reset: ResetInterval | None) -> None: ...
 
     def delete_key(self, key_hash: str) -> None: ...

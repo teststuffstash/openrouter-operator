@@ -7,6 +7,7 @@ The kopf handler turns a Plan into port calls; this module just decides *what* s
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from .models import OpenRouterKeySpec, ResetInterval
 from .ports import KeyState
@@ -14,11 +15,16 @@ from .ports import KeyState
 
 @dataclass(frozen=True)
 class Desired:
-    """The key we want to exist, derived from a spec."""
+    """The key we want to exist, derived from a spec.
+
+    `reset_interval` is `None` for an ephemeral session key (no reset window — a one-shot hard cap).
+    `expires_at` is set-once at mint time (not reconciled), so the key self-destructs server-side.
+    """
 
     name: str
     limit: float
-    reset_interval: ResetInterval
+    reset_interval: ResetInterval | None
+    expires_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -46,7 +52,8 @@ def desired_from_spec(spec: OpenRouterKeySpec) -> Desired:
     return Desired(
         name=spec.key_name(),
         limit=spec.budget_usd,
-        reset_interval=spec.reset_interval,
+        reset_interval=spec.effective_reset(),  # None for an ephemeral session key
+        expires_at=spec.expires_at,
     )
 
 

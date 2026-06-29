@@ -20,6 +20,8 @@ spec:
         - { name: Project, type: string, jsonPath: .spec.project }
         - { name: Budget, type: number, jsonPath: .spec.budgetUSD }
         - { name: Reset, type: string, jsonPath: .spec.resetInterval }
+        - { name: Ephemeral, type: boolean, jsonPath: .spec.ephemeral }
+        - { name: Expires, type: string, jsonPath: .spec.expiresAt }
         - { name: Guardrail, type: string, jsonPath: .spec.guardrail }
       schema:
         openAPIV3Schema:
@@ -41,7 +43,26 @@ spec:
                   type: string
                   enum: [daily, weekly, monthly]
                   default: weekly
-                  description: Budget reset cadence. weekly by default — caps a runaway agent's blast radius.
+                  description: >-
+                    Budget reset cadence for a standing key. weekly by default — caps a runaway
+                    agent's blast radius. Ignored when ephemeral=true (a session key has no reset).
+                ephemeral:
+                  type: boolean
+                  default: false
+                  description: >-
+                    If true, mint a single-shot per-session key with a HARD budgetUSD cap and no
+                    reset window — the real per-session breaker. Requires `session`.
+                session:
+                  type: string
+                  description: >-
+                    Unique session id (e.g. issue-42-round-1). Required when ephemeral; makes the
+                    OpenRouter key + the target Secret unique per session.
+                expiresAt:
+                  type: string
+                  format: date-time
+                  description: >-
+                    RFC3339 timestamp after which OpenRouter auto-expires the key. Set for ephemeral
+                    session keys so they self-destruct even if the CR is never deleted.
                 guardrail:
                   type: string
                   description: OpenRouter guardrail name to attach (e.g. only-free).

@@ -47,7 +47,9 @@ def reconcile_key(
     plan = decide(desired, observed)
 
     if isinstance(plan, Create):
-        minted = port.create_key(desired.name, desired.limit, desired.reset_interval)
+        minted = port.create_key(
+            desired.name, desired.limit, desired.reset_interval, desired.expires_at
+        )
         write_key_secret(namespace, parsed.target_secret_name(), minted.value)
         patch.status["openrouter"] = {"hash": minted.hash}
     elif isinstance(plan, Update):

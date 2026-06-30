@@ -68,4 +68,18 @@ def _to_state(data: Any) -> KeyState:
         name=str(getattr(data, "name", "")),
         limit=float(getattr(data, "limit", 0.0) or 0.0),
         reset_interval=ResetInterval(reset_raw) if reset_raw else None,
+        expires_at=_parse_dt(getattr(data, "expires_at", None)),
+        disabled=bool(getattr(data, "disabled", False)),
     )
+
+
+def _parse_dt(value: Any) -> datetime | None:
+    """SDK hands back a datetime or an ISO-8601 string; normalise to an aware datetime or None."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None

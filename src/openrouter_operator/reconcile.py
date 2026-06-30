@@ -57,18 +57,34 @@ def desired_from_spec(spec: OpenRouterKeySpec) -> Desired:
     )
 
 
-def decide(desired: Desired, observed: KeyState | None) -> Plan:
+def decide(desired: Desired, observed: KeyState | None, now: datetime) -> Plan:
     """Decide the action to reconcile `observed` toward `desired`.
 
-    - no key yet        -> Create
-    - budget/reset drifted -> Update
-    - already correct    -> NoOp
+    - no key yet, or the existing one is DEAD (expired/revoked) -> Create (mint / re-mint)
+    - budget/reset drifted                                       -> Update
+    - already correct                                            -> NoOp
+
+    Self-heal: OpenRouter keeps returning an expired/revoked key's record, so a stale `status.hash`
+    looks minted while the key 401s. Treat a dead key like an absent one and re-mint. But only when
+    the result would actually be LIVE — if the spec's own `expires_at` is already past, a re-mint
+    would be born-dead and hot-loop, so NoOp and wait for a fresh CR (new round) instead.
     """
-    if observed is None:
-        return Create(desired)
+    if observed is None or _is_dead(observed, now):
+        if desired.expires_at is None or desired.expires_at > now:
+            return Create(desired)
+        return NoOp()
 
     drifted = observed.limit != desired.limit or observed.reset_interval != desired.reset_interval
     if drifted:
         return Update(observed.hash, desired)
 
     return NoOp()
+
+
+def _is_dead(observed: KeyState, now: datetime) -> bool:
+    """A key OpenRouter will reject: revoked, or past its expiry. NOT budget-exhausted — re-minting
+    an exhausted key would hand out a fresh `budgetUSD`, defeating the per-session cap, so an
+    exhausted key is intentionally left to 403."""
+    if observed.disabled:
+        return True
+    return observed.expires_at is not None and observed.expires_at <= now

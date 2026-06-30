@@ -6,6 +6,7 @@ All the judgement lives in reconcile.decide() (pure, tested). This module only d
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from typing import Any
 
 import kopf
@@ -44,7 +45,7 @@ def reconcile_key(
 
     key_hash = (status.get("openrouter") or {}).get("hash")
     observed = port.get_key(key_hash) if key_hash else None
-    plan = decide(desired, observed)
+    plan = decide(desired, observed, datetime.now(UTC))
 
     if isinstance(plan, Create):
         minted = port.create_key(

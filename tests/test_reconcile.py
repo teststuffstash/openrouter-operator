@@ -15,6 +15,7 @@ from openrouter_operator.models import OpenRouterKeySpec, ResetInterval
 from openrouter_operator.ports import KeyState, MintedKey, OpenRouterPort
 from openrouter_operator.reconcile import (
     Create,
+    Desired,
     NoOp,
     Plan,
     Update,
@@ -31,6 +32,10 @@ SPEC = OpenRouterKeySpec.model_validate(
     }
 )
 DESIRED = desired_from_spec(SPEC)
+
+# Fixed "now" for the decision table. Before EPHEMERAL_SPEC's expiresAt (12:00) so an ephemeral mint
+# produces a live key; PAST/FUTURE observed expiries are set relative to it.
+NOW = datetime(2026, 6, 29, 11, 0, tzinfo=UTC)
 
 
 def _state(
@@ -51,7 +56,7 @@ def _state(
     ],
 )
 def test_decide(description: str, observed: KeyState | None, expected: type[Plan]) -> None:
-    plan = decide(DESIRED, observed)
+    plan = decide(DESIRED, observed, NOW)
     assert isinstance(plan, expected), description
     if isinstance(plan, Update):
         assert observed is not None
@@ -98,7 +103,12 @@ EPHEMERAL_SPEC = OpenRouterKeySpec.model_validate(
 EPHEMERAL_DESIRED = desired_from_spec(EPHEMERAL_SPEC)
 
 
-def _eph_state(*, limit: float = 0.5) -> KeyState:
+def _eph_state(
+    *,
+    limit: float = 0.5,
+    expires_at: datetime | None = None,
+    disabled: bool = False,
+) -> KeyState:
     """Observed session key: minted with no reset window -> reset_interval is None (must NOT
     read back as weekly, or decide() update-loops it forever)."""
     return KeyState(
@@ -106,22 +116,39 @@ def _eph_state(*, limit: float = 0.5) -> KeyState:
         name="sleep-tracking-session-issue-42-round-1",
         limit=limit,
         reset_interval=None,
+        expires_at=expires_at,
+        disabled=disabled,
     )
+
+
+_PAST = datetime(2026, 6, 29, 10, 0, tzinfo=UTC)  # before NOW (11:00) — expired
+_FUTURE = datetime(2026, 6, 29, 12, 30, tzinfo=UTC)  # after NOW — still live
 
 
 @pytest.mark.parametrize(
     ("description", "observed", "expected"),
     [
         ("no session key yet -> create", None, Create),
-        ("session key present, cap matches -> noop", _eph_state(), NoOp),
-        ("session cap drift -> update", _eph_state(limit=1.0), Update),
+        ("session key present + live, cap matches -> noop", _eph_state(expires_at=_FUTURE), NoOp),
+        ("session cap drift -> update", _eph_state(limit=1.0, expires_at=_FUTURE), Update),
+        # self-heal: a dead key (the '401 User not found' corpse) must re-mint, not NoOp
+        ("session key EXPIRED -> recreate", _eph_state(expires_at=_PAST), Create),
+        ("session key REVOKED (disabled) -> recreate", _eph_state(disabled=True), Create),
     ],
 )
 def test_decide_ephemeral(
     description: str, observed: KeyState | None, expected: type[Plan]
 ) -> None:
-    plan = decide(EPHEMERAL_DESIRED, observed)
+    plan = decide(EPHEMERAL_DESIRED, observed, NOW)
     assert isinstance(plan, expected), description
+
+
+def test_decide_skips_born_dead_remint() -> None:
+    # dead key AND the spec's own expiresAt is already past → a re-mint would be born-dead and
+    # hot-loop, so NoOp and wait for a fresh CR (new round) instead.
+    stale = Desired(name="x", limit=0.5, reset_interval=None, expires_at=_PAST)
+    assert isinstance(decide(stale, _eph_state(expires_at=_PAST), NOW), NoOp)
+    assert isinstance(decide(stale, None, NOW), NoOp)  # never minted + already-past spec -> NoOp
 
 
 def test_ephemeral_desired_and_helpers() -> None:
@@ -147,6 +174,24 @@ def test_to_state_preserves_null_reset() -> None:
     assert no_reset.reset_interval is None
     weekly = _to_state(SimpleNamespace(hash="GK", name="x", limit=5.0, limit_reset="weekly"))
     assert weekly.reset_interval is ResetInterval.weekly
+
+
+def test_to_state_parses_liveness() -> None:
+    # expires_at (ISO string or datetime) + disabled feed the dead-key self-heal
+    s = _to_state(
+        SimpleNamespace(
+            hash="GK",
+            name="x",
+            limit=0.5,
+            limit_reset=None,
+            expires_at="2026-06-29T12:00:00Z",
+            disabled=True,
+        )
+    )
+    assert s.expires_at == datetime(2026, 6, 29, 12, 0, tzinfo=UTC) and s.disabled is True
+    # absent attrs default safely (a key with no expiry / not disabled)
+    bare = _to_state(SimpleNamespace(hash="GK", name="x", limit=0.5, limit_reset="weekly"))
+    assert bare.expires_at is None and bare.disabled is False
 
 
 class _FakePort:

@@ -1,0 +1,13 @@
+# Keeps the oldest armed+green PR up-to-date with master so auto-merge can fire. Thin caller → the
+# reusable org workflow in homelab. See homelab FU-041 (docs/agents/merge-path.md).
+name: update-pr-branch
+on:
+  push: { branches: [master] }
+  workflow_run: { workflows: [CI], types: [completed] }
+  schedule: [{ cron: "*/15 * * * *" }]
+  workflow_dispatch: {}
+concurrency: { group: update-pr-branch, cancel-in-progress: false }
+jobs:
+  update:
+    uses: teststuffstash/homelab/.github/workflows/update-pr-branch.reusable.yml@master
+    secrets: inherit

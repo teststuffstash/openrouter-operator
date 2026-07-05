@@ -1,0 +1,99 @@
+# deploy.yaml — the operator deploy pipeline (Helm + OCI). On an app-relevant master push, build image
+# + package chart at ONE version (chart version == appVersion == image tag == 2026.<m>.<d>-g<sha>), push
+# both to ghcr, and open/arm the narrow deploy-pin PR in homelab/argocd. Renovate is NOT used for our own
+# image — a CI job owns the first-party bump (Renovate stays on external deps: base image + Python).
+#
+# Prereqs (operator, one-time): a `homelab-deploy` App installed on HOMELAB (contents + pull_requests) →
+# DEPLOY_APP_* org Actions secrets; `allow_auto_merge` enabled on homelab; the ghcr `charts` + operator
+# packages readable/writable by the job token.
+name: deploy
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "src/**"
+      - "chart/**"
+      - "Dockerfile"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch: {} # manual re-deploy of current master
+
+concurrency:
+  group: deploy-openrouter-operator
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/teststuffstash/openrouter-operator
+
+jobs:
+  deploy:
+    runs-on: homelab-ephemeral
+    permissions:
+      contents: read
+      packages: write # push image + chart to ghcr via GITHUB_TOKEN
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # devbox toolchain (helm, gh) — single-user Nix, same pattern as sleep-tracking's deploy.yaml.
+      - name: Install xz (missing from the ARC runner image)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq xz-utils
+      - name: Install Nix (single-user)
+        uses: cachix/install-nix-action@v31
+        with:
+          install_options: --no-daemon
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Install devbox (reuse the single-user Nix)
+        uses: jetify-com/devbox-install-action@v0.13.0
+        with:
+          skip-nix-installation: "true"
+
+      # Version = commit-date CalVer + short git sha (reproducible; `-g` keeps the sha out of SemVer's
+      # all-numeric-prerelease trap). chart version == appVersion == image tag == this.
+      - name: Compute version
+        id: ver
+        run: |
+          SHA=$(git rev-parse --short=12 HEAD)
+          DATE=$(git show -s --format=%cd --date=format:'%Y.%-m.%-d' HEAD)
+          echo "version=${DATE}-g${SHA}" >> "$GITHUB_OUTPUT"
+          echo "→ deploying ${DATE}-g${SHA}"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push image
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          docker build -t "$IMAGE:$V" -t "$IMAGE:latest" .
+          docker push "$IMAGE:$V"
+          docker push "$IMAGE:latest"
+
+      - name: Package + push chart (devbox run package-chart)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | devbox run -- helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          devbox run package-chart
+
+      # cross-repo: mint a short-lived token scoped to HOMELAB, then open the deploy-pin PR with devbox's gh.
+      - name: Mint homelab token
+        id: hl
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.DEPLOY_APP_ID }}
+          private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}
+          owner: teststuffstash
+          repositories: homelab
+
+      - name: Open/arm the homelab deploy-pin PR
+        env:
+          GH_TOKEN: ${{ steps.hl.outputs.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: devbox run -- bash scripts/deploy-pin.sh

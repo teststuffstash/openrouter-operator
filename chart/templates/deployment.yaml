@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: openrouter-operator
-  namespace: openrouter-operator
+  namespace: {{ .Release.Namespace }}
   labels: { app: openrouter-operator }
 spec:
   replicas: 1
@@ -16,16 +16,13 @@ spec:
       serviceAccountName: openrouter-operator
       containers:
         - name: operator
-          # ghcr package must be PUBLIC (one-time, like the runner-group toggle) or add an
-          # imagePullSecret — the repo is public so public-package is simplest.
-          image: ghcr.io/teststuffstash/openrouter-operator:latest
-          imagePullPolicy: Always
-          # single instance, no peering/leases needed
-          args: ["--standalone"]
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--standalone"] # single instance, no peering/leases needed
           env:
             - name: OPENROUTER_MANAGEMENT_KEY
               valueFrom:
-                secretKeyRef: { name: openrouter-management, key: OPENROUTER_MANAGEMENT_KEY }
+                secretKeyRef: { name: {{ .Values.managementSecret.name }}, key: {{ .Values.managementSecret.key }} }
             # kopf's getpass.getuser() needs a name — the nonroot UID 65532 has no /etc/passwd entry
             - name: LOGNAME
               value: operator
@@ -37,9 +34,7 @@ spec:
             httpGet: { path: /healthz, port: health }
             initialDelaySeconds: 15
             periodSeconds: 30
-          resources:
-            requests: { cpu: 50m, memory: 128Mi }
-            limits: { cpu: 500m, memory: 256Mi }
+          resources: {{ toYaml .Values.resources | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true

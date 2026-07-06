@@ -5,14 +5,19 @@ image:
   tag: ""
   pullPolicy: IfNotPresent # version tag is immutable, so no need to re-pull
 
-# The ExternalSecret that delivers the OpenRouter MANAGEMENT key (Infisical → ESO). Set create:false
-# if the Secret is provisioned some other way.
+# The operator needs a Secret holding the OpenRouter MANAGEMENT (provisioning) key. GENERIC by default —
+# nothing cluster-specific here. Two ways to supply it:
+#   (a) create the Secret yourself (any mechanism) → keep create:false and point name/key at it.
+#   (b) let the chart render an ExternalSecret (needs external-secrets.io) → set create:true and fill
+#       externalSecret.storeRef + remoteRef for YOUR secret store (e.g. Vault, AWS SM, Infisical, …).
 managementSecret:
-  create: true
+  create: false
   name: openrouter-management
   key: OPENROUTER_MANAGEMENT_KEY
-  refreshInterval: 1h
-  storeRef: { name: infisical, kind: ClusterSecretStore }
+  externalSecret:
+    refreshInterval: 1h
+    storeRef: { name: "", kind: ClusterSecretStore } # name REQUIRED when create:true
+    remoteRef: { key: "" } # the key's name in YOUR store; defaults to managementSecret.key if empty
 
 resources:
   requests: { cpu: 50m, memory: 128Mi }

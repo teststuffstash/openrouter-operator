@@ -1,0 +1,11 @@
+# Reviewer-bot approves Renovate `automerge` dep bumps (incl. the deploy digest bumps) so auto-merge
+# can complete. Thin caller → the reusable org workflow in homelab. See homelab FU-014/FU-041.
+name: renovate-approve
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled]
+permissions: {}
+jobs:
+  approve:
+    uses: teststuffstash/homelab/.github/workflows/renovate-approve.reusable.yml@master
+    secrets: inherit

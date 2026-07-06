@@ -1,0 +1,11 @@
+apiVersion: v2
+name: openrouter-operator
+description: |
+  kopf operator that reconciles OpenRouterKey CRs — mints per-project OpenRouter API
+  keys with budgets/guardrails. Ships the CRD + RBAC + ExternalSecret + controller
+  Deployment as one versioned unit.
+type: application
+# Placeholder — deploy.yaml sets `--version`/`--app-version` to the release version at package
+# time, so chart version == appVersion == image tag all move in lockstep.
+version: 0.0.0
+appVersion: "0.0.0"

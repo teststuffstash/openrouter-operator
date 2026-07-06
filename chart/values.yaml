@@ -1,0 +1,24 @@
+image:
+  repository: ghcr.io/teststuffstash/openrouter-operator
+  # empty → defaults to .Chart.AppVersion (== chart version == the released tag). Pin here only to
+  # override; normally the chart version IS the image version.
+  tag: ""
+  pullPolicy: IfNotPresent # version tag is immutable, so no need to re-pull
+
+# The operator needs a Secret holding the OpenRouter MANAGEMENT (provisioning) key. GENERIC by default —
+# nothing cluster-specific here. Two ways to supply it:
+#   (a) create the Secret yourself (any mechanism) → keep create:false and point name/key at it.
+#   (b) let the chart render an ExternalSecret (needs external-secrets.io) → set create:true and fill
+#       externalSecret.storeRef + remoteRef for YOUR secret store (e.g. Vault, AWS SM, Infisical, …).
+managementSecret:
+  create: false
+  name: openrouter-management
+  key: OPENROUTER_MANAGEMENT_KEY
+  externalSecret:
+    refreshInterval: 1h
+    storeRef: { name: "", kind: ClusterSecretStore } # name REQUIRED when create:true
+    remoteRef: { key: "" } # the key's name in YOUR store; defaults to managementSecret.key if empty
+
+resources:
+  requests: { cpu: 50m, memory: 128Mi }
+  limits: { cpu: 500m, memory: 256Mi }

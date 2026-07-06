@@ -59,6 +59,15 @@ uv sync --extra sdk
 OPENROUTER_MANAGEMENT_KEY=sk-or-... kopf run -m openrouter_operator.operator
 ```
 
+## Deploy
+
+Packaged as a **Helm chart** (CRD + RBAC + optional ExternalSecret + Deployment) published to
+`oci://ghcr.io/teststuffstash/charts/openrouter-operator` — chart version == appVersion == image tag.
+Install, values, and the **OpenRouter management-key how-to** (it's manual clickops on OpenRouter — no
+IaC to create the first provisioning key) are in **[`chart/README.md`](chart/README.md)**. A push to
+master builds the image + chart at one `CalVer-g<sha>` version and opens the deploy-pin PR
+(`deploy.yaml`); Renovate is used only for external deps, never the operator's own image.
+
 ## Status
 
 Early scaffold. The reconcile logic + CRD + decision-table tests are complete and CI-green. The

@@ -1,0 +1,95 @@
+# Goose recipe — the openrouter-operator bug fixer (homelab docs/agents/ + ADR-077..082, FU-052).
+#
+#   goose run --recipe .agents/fix.yaml --params issue=<n>
+#
+# Runs inside an ephemeral agent-sandbox pod (homelab agents/agent-session.sh) with a branch+PR-only
+# GitHub token and NO live OpenRouter/cluster creds. The ONLY write verb is "push a fix/ branch + open a
+# PR"; master is unreachable (branch protection + token scope).
+version: "1.0.0"
+title: "openrouter-operator bug fixer"
+description: "Turn a triaged issue into a decision-table-tested fix/ branch + PR for the kopf operator."
+
+instructions: |
+  You are the openrouter-operator project's coding agent. Fix ONLY the bug in the given GitHub issue,
+  test-first, as a tight reviewable diff. This is a **kopf operator with a pure core**: the reconcile
+  logic is `reconcile.decide(desired, observed) -> Plan` behind a narrow `OpenRouterPort` Protocol
+  (`ports.py`), so it's tested OFFLINE with a fake port — never the real OpenRouter API or a cluster.
+
+  FIRST, read the issue — do not skip. Run `gh issue view {{ issue }}` (add `--comments` if it has
+  discussion) and treat THAT body as the source of truth (the repro + the expected reconcile behaviour).
+  Do NOT infer the bug from code comments alone — they can be stale. If `gh issue view` fails, STOP and
+  report it; never guess the issue from the repo.
+
+  Decision-table TDD (NOT N near-duplicate tests):
+  1. Find the parametrized test that exercises `decide()` (in `tests/`, a table of
+     desired/observed → expected `Plan`). Add the case from the issue that reproduces the bug (or correct
+     an existing case's expectation if the issue says it's wrong). If no such table exists for this area,
+     CREATE exactly ONE parametrized test over a visible list of cases — don't add a near-duplicate test
+     function (that needs explicit justification in the PR).
+  2. Prove it RED: `devbox run ci` must FAIL on the new/changed case before you touch any logic. Then
+     COMMIT the failing case and PUSH the branch immediately (first WIP push — banks the reproduction).
+  3. Make the MINIMAL change (most likely `src/openrouter_operator/{reconcile,models,ports}.py`) to go
+     green. Keep `devbox run ci` green end-to-end: ruff (lint+format), **mypy --strict**, pytest, coverage
+     `fail_under`. Don't break other cases or widen types with `# type: ignore`/`Any` to force green.
+  4. `devbox run scan-secrets` must be clean. Then open the PR.
+
+  Hard rules:
+  - Touch `src/` + `tests/` only (docs if the fix needs it). Do NOT edit: `chart/`, `deploy/`,
+    `.github/`, `.agents/`, or anything secret. If the fix belongs in the I/O boundary
+    (`adapter.py`/`k8s.py`/`operator.py`), still assert the behaviour at the `decide()` seam with a fake.
+  - Branch `fix/issue-{{ issue }}-<slug>` and PUSH IT EARLY — right after the first (RED) commit, then
+    after each green step. Incremental pushes are cheap insurance: if the run dies (budget/rate-limit/
+    crash) the branch survives and the next run resumes. Open the PR once `devbox run ci` is green +
+    clean. NEVER push to master.
+  - If the bug is NOT reproducible in the current code, STOP and report that with the (passing) test you
+    wrote as evidence — do not fabricate a fix or weaken an assertion to force green.
+  - The PR body must link the issue (`Fixes #{{ issue }}`) and show the red->green case + coverage.
+
+prompt: |
+  Fix the bug in GitHub issue #{{ issue }} for this repo, following the instructions exactly.
+  Use the `developer` tools (read/edit files; run `devbox run ci`, `git`, `gh`). When done, report:
+  root cause (file + logic), the fix, the decision-table case(s) added, the final `devbox run ci` result
+  with coverage %, the branch name, and the PR URL.
+
+parameters:
+  - key: issue
+    input_type: string
+    requirement: required
+    description: "GitHub issue number (carries the repro + expected reconcile behaviour)."
+
+extensions:
+  - type: builtin
+    name: developer
+    timeout: 900
+    bundled: true
+
+# Self-verification: success is `devbox run ci` passing, not the model's say-so. Re-run with the failure
+# fed back, up to a few attempts.
+retry:
+  max_retries: 3
+  checks:
+    - type: shell
+      command: "devbox run ci"
+  on_failure: "devbox run ci 2>&1 | tail -40"
+
+# Structured result for the coordinator / auto-merge gate.
+response:
+  json_schema:
+    type: object
+    additionalProperties: false
+    required: [reproduced, ci_passed, branch]
+    properties:
+      reproduced: { type: boolean, description: "Did the issue reproduce as a RED decision-table case first?" }
+      root_cause: { type: string, description: "File + logic that was wrong." }
+      files_changed: { type: array, items: { type: string } }
+      cases_added: { type: array, items: { type: string }, description: "decision-table case ids." }
+      ci_passed: { type: boolean }
+      coverage_pct: { type: number }
+      branch: { type: string }
+      pr_url: { type: string }
+
+# Model is a CALL-TIME arg (agent-session.sh --model → GOOSE_MODEL), not pinned here — OpenRouter ids
+# rotate. Provenance is recorded per-commit (Agent-Model trailer). Only stable knobs stay:
+settings:
+  goose_provider: "openrouter"
+  temperature: 0.1

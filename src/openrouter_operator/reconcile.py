@@ -39,11 +39,31 @@ class Update:
 
 
 @dataclass(frozen=True)
+class Rotate:
+    """Create a fresh key, swap the Secret, THEN delete the old key — for drift a PATCH cannot fix.
+
+    OpenRouter's key PATCH cannot change `expires_at` (issue #6, proven live 2026-07-09): a
+    re-applied CR with a later `spec.expiresAt` reconciled "successfully" while the real key kept
+    its original deadline — and a healthy agent run died at that stale deadline mid-run. Expiry
+    drift therefore rotates. Order matters in the executor: mint + Secret swap BEFORE deleting the
+    old key, so a consumer never observes a window with no live credential.
+    """
+
+    key_hash: str
+    desired: Desired
+
+
+@dataclass(frozen=True)
 class NoOp:
     pass
 
 
-Plan = Create | Update | NoOp
+Plan = Create | Update | Rotate | NoOp
+
+# OpenRouter stores a requested expiry rounded by a few seconds (a key minted for 18:40:10 reads
+# back 18:40:08) — strict equality would rotate every reconcile, forever. Anything inside this
+# window is "the same instant"; real drift (a re-mint extending a session) is minutes-to-hours.
+EXPIRY_TOLERANCE_S = 120.0
 
 
 def desired_from_spec(spec: OpenRouterKeySpec) -> Desired:
@@ -61,24 +81,42 @@ def decide(desired: Desired, observed: KeyState | None, now: datetime) -> Plan:
     """Decide the action to reconcile `observed` toward `desired`.
 
     - no key yet, or the existing one is DEAD (expired/revoked) -> Create (mint / re-mint)
+    - expiry drifted (PATCH can't fix that — issue #6)           -> Rotate (mint+swap+delete)
     - budget/reset drifted                                       -> Update
     - already correct                                            -> NoOp
 
     Self-heal: OpenRouter keeps returning an expired/revoked key's record, so a stale `status.hash`
     looks minted while the key 401s. Treat a dead key like an absent one and re-mint. But only when
     the result would actually be LIVE — if the spec's own `expires_at` is already past, a re-mint
-    would be born-dead and hot-loop, so NoOp and wait for a fresh CR (new round) instead.
+    (or rotate) would be born-dead and hot-loop, so NoOp and wait for a fresh CR instead.
     """
     if observed is None or _is_dead(observed, now):
         if desired.expires_at is None or desired.expires_at > now:
             return Create(desired)
         return NoOp()
 
+    if _expiry_drifted(desired, observed):
+        if desired.expires_at is not None and desired.expires_at > now:
+            return Rotate(observed.hash, desired)
+        return NoOp()  # the desired expiry is itself past — rotating would mint a born-dead key
+
     drifted = observed.limit != desired.limit or observed.reset_interval != desired.reset_interval
     if drifted:
         return Update(observed.hash, desired)
 
     return NoOp()
+
+
+def _expiry_drifted(desired: Desired, observed: KeyState) -> bool:
+    """Expiry drift only a Rotate can reconcile (issue #6: PATCH silently keeps the old deadline).
+    Only meaningful when the spec WANTS an expiry (session keys): a standing key (expires_at None)
+    ignores whatever the live key carries. The tolerance absorbs OpenRouter's storage rounding so a
+    matched key never rotate-loops."""
+    if desired.expires_at is None:
+        return False
+    if observed.expires_at is None:
+        return True
+    return abs((observed.expires_at - desired.expires_at).total_seconds()) > EXPIRY_TOLERANCE_S
 
 
 def _is_dead(observed: KeyState, now: datetime) -> bool:

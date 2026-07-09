@@ -23,6 +23,9 @@ spec:
         - { name: Ephemeral, type: boolean, jsonPath: .spec.ephemeral }
         - { name: Expires, type: string, jsonPath: .spec.expiresAt }
         - { name: Guardrail, type: string, jsonPath: .spec.guardrail }
+        # the LIVE expiry OpenRouter actually stored (status), vs the spec's wish above — these
+        # diverged for real (issue #6); dispatch pre-flights read THIS one.
+        - { name: LiveExpires, type: string, jsonPath: .status.openrouter.expires_at }
       schema:
         openAPIV3Schema:
           type: object

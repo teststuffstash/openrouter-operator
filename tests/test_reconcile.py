@@ -18,6 +18,7 @@ from openrouter_operator.reconcile import (
     Desired,
     NoOp,
     Plan,
+    Rotate,
     Update,
     decide,
     desired_from_spec,
@@ -125,12 +126,44 @@ _PAST = datetime(2026, 6, 29, 10, 0, tzinfo=UTC)  # before NOW (11:00) — expir
 _FUTURE = datetime(2026, 6, 29, 12, 30, tzinfo=UTC)  # after NOW — still live
 
 
+# The desired ephemeral expiry (12:00) ± tolerance: OpenRouter stores a requested instant rounded
+# by seconds, so "matches" means within EXPIRY_TOLERANCE_S, not equality (or every reconcile would
+# rotate). _DESIRED_EXP_STORED simulates that rounding; _EXTENDED is a genuine re-mint extension.
+_DESIRED_EXP_STORED = datetime(2026, 6, 29, 11, 59, 58, tzinfo=UTC)  # 12:00 as OpenRouter stored it
+_EXTENDED = datetime(2026, 6, 29, 14, 0, tzinfo=UTC)  # live key already lasts LONGER than desired
+
+
 @pytest.mark.parametrize(
     ("description", "observed", "expected"),
     [
         ("no session key yet -> create", None, Create),
-        ("session key present + live, cap matches -> noop", _eph_state(expires_at=_FUTURE), NoOp),
-        ("session cap drift -> update", _eph_state(limit=1.0, expires_at=_FUTURE), Update),
+        (
+            "session key live, cap + expiry match (within storage rounding) -> noop",
+            _eph_state(expires_at=_DESIRED_EXP_STORED),
+            NoOp,
+        ),
+        (
+            "session cap drift -> update",
+            _eph_state(limit=1.0, expires_at=_DESIRED_EXP_STORED),
+            Update,
+        ),
+        # issue #6 (proven live 2026-07-09): PATCH cannot change expires_at, so expiry drift ROTATES
+        # (mint+swap+delete). A re-minted CR extending a session used to reconcile "successfully"
+        # while the real key kept its original deadline — and a healthy run died at it.
+        (
+            "expiry drift beyond tolerance (12:30 vs desired 12:00) -> rotate",
+            _eph_state(expires_at=_FUTURE),
+            Rotate,
+        ),
+        ("larger drift (+2h vs desired) -> rotate", _eph_state(expires_at=_EXTENDED), Rotate),
+        ("no expiry on live key, spec wants one -> rotate", _eph_state(expires_at=None), Rotate),
+        # expiry drift OUTRANKS cap drift: an Update would PATCH the cap and keep the stale
+        # deadline — the whole issue-#6 failure shape.
+        (
+            "expiry + cap both drifted -> rotate (not update)",
+            _eph_state(limit=1.0, expires_at=_FUTURE),
+            Rotate,
+        ),
         # self-heal: a dead key (the '401 User not found' corpse) must re-mint, not NoOp
         ("session key EXPIRED -> recreate", _eph_state(expires_at=_PAST), Create),
         ("session key REVOKED (disabled) -> recreate", _eph_state(disabled=True), Create),
@@ -141,6 +174,13 @@ def test_decide_ephemeral(
 ) -> None:
     plan = decide(EPHEMERAL_DESIRED, observed, NOW)
     assert isinstance(plan, expected), description
+
+
+def test_rotate_skipped_when_desired_expiry_already_past() -> None:
+    # live key, expiry drifted, but the DESIRED expiry is itself past → rotating would mint a
+    # born-dead key (same guard as the re-mint path); NoOp until a fresh CR arrives.
+    stale = Desired(name="x", limit=0.5, reset_interval=None, expires_at=_PAST)
+    assert isinstance(decide(stale, _eph_state(expires_at=_FUTURE), NOW), NoOp)
 
 
 def test_decide_skips_born_dead_remint() -> None:

@@ -16,11 +16,19 @@ def _core_v1() -> client.CoreV1Api:
     return client.CoreV1Api()
 
 
+SESSION_KEY_LABEL = "openrouter.teststuff.net/session-key"
+
+
 def write_key_secret(namespace: str, name: str, key_value: str) -> None:
-    """Create-or-replace a Secret holding the OpenRouter key as OPENROUTER_API_KEY."""
+    """Create-or-replace a Secret holding the OpenRouter key as OPENROUTER_API_KEY.
+
+    The label marks it resolvable by the egress proxy's opaque-ref credential injection
+    (homelab ADR-087 / FU-018): the proxy honors `ref:<ns>/<name>` ONLY for secrets carrying
+    this label, so its get-secret RBAC can never be leveraged into a generic secret oracle.
+    """
     v1 = _core_v1()
     body = client.V1Secret(
-        metadata=client.V1ObjectMeta(name=name),
+        metadata=client.V1ObjectMeta(name=name, labels={SESSION_KEY_LABEL: "true"}),
         string_data={"OPENROUTER_API_KEY": key_value},
         type="Opaque",
     )

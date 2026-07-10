@@ -19,7 +19,7 @@ def _core_v1() -> client.CoreV1Api:
 SESSION_KEY_LABEL = "openrouter.teststuff.net/session-key"
 
 
-def write_key_secret(namespace: str, name: str, key_value: str) -> None:
+def write_key_secret(namespace: str, name: str, key_value: str, key_hash: str = "") -> None:
     """Create-or-replace a Secret holding the OpenRouter key as OPENROUTER_API_KEY.
 
     The label marks it resolvable by the egress proxy's opaque-ref credential injection
@@ -29,7 +29,10 @@ def write_key_secret(namespace: str, name: str, key_value: str) -> None:
     v1 = _core_v1()
     body = client.V1Secret(
         metadata=client.V1ObjectMeta(name=name, labels={SESSION_KEY_LABEL: "true"}),
-        string_data={"OPENROUTER_API_KEY": key_value},
+        # KEY_HASH makes post-hoc accounting durable: agent-finalize surfaces it in the run
+        # stats, so the ledger-reflex can backfill a cost_unknown run from the management API
+        # long after the CR/pod are gone (homelab FU-057 §ledger).
+        string_data={"OPENROUTER_API_KEY": key_value, "KEY_HASH": key_hash},
         type="Opaque",
     )
     try:

@@ -52,7 +52,10 @@ def reconcile_key(
             desired.name, desired.limit, desired.reset_interval, desired.expires_at
         )
         write_key_secret(
-            namespace, parsed.target_secret_name(), minted.value, minted.hash,
+            namespace,
+            parsed.target_secret_name(),
+            minted.value,
+            minted.hash,
             parsed.guardrail or "",
         )
         patch.status["openrouter"] = _key_status(port, minted.hash)
@@ -63,7 +66,10 @@ def reconcile_key(
             desired.name, desired.limit, desired.reset_interval, desired.expires_at
         )
         write_key_secret(
-            namespace, parsed.target_secret_name(), minted.value, minted.hash,
+            namespace,
+            parsed.target_secret_name(),
+            minted.value,
+            minted.hash,
             parsed.guardrail or "",
         )
         patch.status["openrouter"] = _key_status(port, minted.hash)

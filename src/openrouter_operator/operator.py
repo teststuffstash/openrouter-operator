@@ -51,7 +51,10 @@ def reconcile_key(
         minted = port.create_key(
             desired.name, desired.limit, desired.reset_interval, desired.expires_at
         )
-        write_key_secret(namespace, parsed.target_secret_name(), minted.value, minted.hash)
+        write_key_secret(
+            namespace, parsed.target_secret_name(), minted.value, minted.hash,
+            parsed.guardrail or "",
+        )
         patch.status["openrouter"] = _key_status(port, minted.hash)
     elif isinstance(plan, Rotate):
         # Expiry drift PATCH can't fix (issue #6): mint fresh + swap the Secret FIRST, delete the
@@ -59,7 +62,10 @@ def reconcile_key(
         minted = port.create_key(
             desired.name, desired.limit, desired.reset_interval, desired.expires_at
         )
-        write_key_secret(namespace, parsed.target_secret_name(), minted.value, minted.hash)
+        write_key_secret(
+            namespace, parsed.target_secret_name(), minted.value, minted.hash,
+            parsed.guardrail or "",
+        )
         patch.status["openrouter"] = _key_status(port, minted.hash)
         port.delete_key(plan.key_hash)
     elif isinstance(plan, Update):

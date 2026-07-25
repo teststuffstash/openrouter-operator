@@ -15,24 +15,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The ARC runner is a container with no systemd, so devbox's daemon-based Nix installer fails.
-      # Install Nix single-user (--no-daemon) ourselves, then tell devbox to reuse it. The slim
-      # runner image also lacks xz (the Nix installer needs it to unpack). See homelab docs/ci.md.
-      - name: Install xz (missing from the ARC runner image)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq xz-utils
-
-      - name: Install Nix (single-user)
-        uses: cachix/install-nix-action@v31
-        with:
-          install_options: --no-daemon
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-
-      - name: Install devbox (reuse the single-user Nix above)
-        uses: jetify-com/devbox-install-action@v0.13.0
-        with:
-          skip-nix-installation: "true"
-
+      # No toolchain install: the ARC runner image bakes single-user Nix + devbox + the LAN
+      # nix substituter (homelab docker/arc-runner/, FU-015).
       - name: Lint + type-check + test (devbox run ci)
         run: devbox run ci
 

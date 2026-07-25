@@ -37,19 +37,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      # devbox toolchain (helm, gh) — single-user Nix, same pattern as sleep-tracking's deploy.yaml.
-      - name: Install xz (missing from the ARC runner image)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq xz-utils
-      - name: Install Nix (single-user)
-        uses: cachix/install-nix-action@v31
-        with:
-          install_options: --no-daemon
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-      - name: Install devbox (reuse the single-user Nix)
-        uses: jetify-com/devbox-install-action@v0.13.0
-        with:
-          skip-nix-installation: "true"
+      # No toolchain install: the ARC runner image bakes single-user Nix + devbox + the LAN
+      # nix substituter (homelab docker/arc-runner/, FU-015).
 
       # Version = commit-date CalVer + short git sha (reproducible; `-g` keeps the sha out of SemVer's
       # all-numeric-prerelease trap). chart version == appVersion == image tag == this.

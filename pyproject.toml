@@ -40,7 +40,7 @@ files = ["src", "tests"]
 
 # Boundary libs without type info — treat as Any. Our code stays strict; these are the I/O edges.
 [[tool.mypy.overrides]]
-module = ["kopf.*", "kubernetes.*", "openrouter.*"]
+module = ["kopf.*", "kubernetes.*", "openrouter.*", "yaml.*"]
 ignore_missing_imports = true
 
 # kopf/pytest decorators are untyped; relax just that one strict check in the glue + test modules.

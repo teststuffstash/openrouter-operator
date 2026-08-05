@@ -33,8 +33,8 @@ def _cluster_role_rules() -> list[dict[str, object]]:
     for doc in docs:
         if isinstance(doc, dict) and doc.get("kind") == "ClusterRole":
             rules = doc.get("rules")
-            assert isinstance(rules, list), "ClusterRole.rules is not a list"
-            return rules  # type: ignore[return-value]
+            if isinstance(rules, list):
+                return [rule for rule in rules if isinstance(rule, dict)]
     raise AssertionError("ClusterRole not found in rbac.yaml")
 
 
@@ -43,15 +43,19 @@ def _verbs_for(resources: list[str]) -> set[str]:
     verbs: set[str] = set()
     for rule in _cluster_role_rules():
         rule_resources = rule.get("resources", [])
-        if any(r in rule_resources for r in resources):
-            v = rule.get("verbs", [])
-            assert isinstance(v, list)
-            verbs.update(v)
+        if isinstance(rule_resources, list) and any(r in rule_resources for r in resources):
+            verbs_list = rule.get("verbs", [])
+            if isinstance(verbs_list, list):
+                verbs.update(v for v in verbs_list if isinstance(v, str))
     return verbs
 
 
-@pytest.mark.parametrize(  # type: ignore[misc]
-    ("description", "resources", "required_verb"),
+@pytest.mark.parametrize(
+    (
+        "description",
+        "resources",
+        "required_verb",
+    ),
     [
         (
             "openrouterkeys rule must grant delete (issue #14)",

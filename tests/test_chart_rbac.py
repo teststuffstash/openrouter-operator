@@ -65,11 +65,8 @@ def _verbs_for(resources: list[str]) -> set[str]:
         ),
     ],
 )
-def test_rbac_verbs(
-    description: str, resources: list[str], required_verb: str
-) -> None:
+def test_rbac_verbs(description: str, resources: list[str], required_verb: str) -> None:
     verbs = _verbs_for(resources)
     assert required_verb in verbs, (
-        f"{description}: verbs for {resources} are {sorted(verbs)}, "
-        f"missing {required_verb!r}"
+        f"{description}: verbs for {resources} are {sorted(verbs)}, missing {required_verb!r}"
     )

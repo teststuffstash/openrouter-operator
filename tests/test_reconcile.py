@@ -22,6 +22,7 @@ from openrouter_operator.reconcile import (
     Update,
     decide,
     desired_from_spec,
+    should_collect,
 )
 
 SPEC = OpenRouterKeySpec.model_validate(
@@ -206,6 +207,62 @@ def test_ephemeral_desired_and_helpers() -> None:
 def test_ephemeral_requires_session() -> None:
     with pytest.raises(ValueError):
         OpenRouterKeySpec.model_validate({"project": "demo", "budgetUSD": 0.5, "ephemeral": True})
+
+
+# ── GC of expired ephemeral keys (issue #10) ────────────────────────────────────────────────────
+# An ephemeral session key self-destructs server-side at expiresAt, but the CR + its Secret linger
+# forever (the spec never changes when the clock passes expiresAt, so no reconcile event fires).
+# A periodic timer collects them: ephemeral ∧ now > expiresAt + 24h grace → collect; a standing key
+# is NEVER collected (it's the funding ceiling). The grace window is testable here without a clock.
+
+_EPH_GC_SPEC = OpenRouterKeySpec.model_validate(
+    {
+        "project": "sleep-tracking",
+        "budgetUSD": 0.5,
+        "ephemeral": True,
+        "session": "issue-42-round-1",
+        "expiresAt": "2026-06-29T12:00:00Z",
+    }
+)
+_STANDING_GC_SPEC = OpenRouterKeySpec.model_validate(
+    {"project": "sleep-tracking", "budgetUSD": 5.0, "resetInterval": "weekly"}
+)
+_EPH_NO_EXP_SPEC = OpenRouterKeySpec.model_validate(
+    {
+        "project": "sleep-tracking",
+        "budgetUSD": 0.5,
+        "ephemeral": True,
+        "session": "issue-42-round-1",
+    }
+)
+_GC_EXPIRY = datetime(2026, 6, 29, 12, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("description", "spec", "now", "expected"),
+    [
+        # the negative case the issue demands: a standing key must never be collected
+        ("standing key never collected", _STANDING_GC_SPEC, _GC_EXPIRY, False),
+        ("ephemeral, not yet expired -> keep", _EPH_GC_SPEC, _GC_EXPIRY, False),
+        (
+            "ephemeral, expired but within 24h grace -> keep",
+            _EPH_GC_SPEC,
+            datetime(2026, 6, 30, 11, 0, tzinfo=UTC),  # +23h
+            False,
+        ),
+        (
+            "ephemeral, expired past 24h grace -> collect",
+            _EPH_GC_SPEC,
+            datetime(2026, 6, 30, 13, 0, tzinfo=UTC),  # +25h
+            True,
+        ),
+        ("ephemeral, no expiresAt -> keep", _EPH_NO_EXP_SPEC, _GC_EXPIRY, False),
+    ],
+)
+def test_should_collect(
+    description: str, spec: OpenRouterKeySpec, now: datetime, expected: bool
+) -> None:
+    assert should_collect(spec, now) is expected, description
 
 
 def test_to_state_preserves_null_reset() -> None:

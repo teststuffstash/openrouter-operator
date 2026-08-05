@@ -23,6 +23,7 @@ dev = [
     "ruff",
     "mypy",
     "pre-commit",
+    "pyyaml>=6.0.3",
 ]
 
 [tool.ruff]

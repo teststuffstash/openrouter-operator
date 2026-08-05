@@ -35,8 +35,7 @@ def test_dev_declares_package_for_test_import(package: str, import_name: str) ->
     deps = _dev_deps()
     # Match either an exact name or a PEP 508 specifier starting with the package name.
     found = any(
-        dep.lower().replace("-", "_").replace(" ", "") == package
-        or dep.lower().startswith(package)
+        dep.lower().replace("-", "_").replace(" ", "") == package or dep.lower().startswith(package)
         for dep in deps
     )
     assert found, (

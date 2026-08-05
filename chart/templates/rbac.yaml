@@ -12,11 +12,11 @@ rules:
   # the CRs it reconciles (+ status)
   - apiGroups: ["openrouter.teststuff.net"]
     resources: ["openrouterkeys", "openrouterkeys/status"]
-    verbs: ["get", "list", "watch", "patch", "update"]
+    verbs: ["get", "list", "watch", "patch", "update", "delete"]
   # write the minted key into the target namespace's Secret
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "create", "update", "patch"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
   # kopf housekeeping
   - apiGroups: [""]
     resources: ["events"]

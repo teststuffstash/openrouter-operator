@@ -7,7 +7,7 @@ The kopf handler turns a Plan into port calls; this module just decides *what* s
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .models import OpenRouterKeySpec, ResetInterval
 from .ports import KeyState
@@ -126,3 +126,25 @@ def _is_dead(observed: KeyState, now: datetime) -> bool:
     if observed.disabled:
         return True
     return observed.expires_at is not None and observed.expires_at <= now
+
+
+# Grace window before an expired ephemeral CR is garbage-collected (issue #10). The key self-
+# destructs server-side at expiresAt, but the CR + its Secret linger forever — nothing generates an
+# event when the clock passes expiresAt, so a periodic timer must sweep them. 24h of grace lets a
+# slow finalize/ledger-reflex read the key's KEY_HASH before it's gone.
+GC_GRACE = timedelta(hours=24)
+
+
+def should_collect(spec: OpenRouterKeySpec, now: datetime) -> bool:
+    """GC predicate (issue #10): should this CR be collected by the expiry timer?
+
+    Collect an EPHEMERAL session key whose `expiresAt` passed more than `GC_GRACE` ago — the key is
+    already dead server-side, so the CR + its Secret are pure litter. A STANDING key is NEVER
+    collected: it's the funding ceiling, and its reset is a soft per-window cap, not a
+    self-destruct. An ephemeral key with no `expiresAt` is also kept (no deadline to sweep on).
+    """
+    if not spec.ephemeral:
+        return False
+    if spec.expires_at is None:
+        return False
+    return now > spec.expires_at + GC_GRACE

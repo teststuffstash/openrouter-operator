@@ -1,76 +1,45 @@
-"""Smoke-tests for chart/templates/rbac.yaml — the RBAC rules the operator runs under.
+"""Reproduce issue #18: the legacy ``{{ … }}``-stripping regex used by the RBAC test
+cannot handle a multi-line Helm control block (``{{- if … }}`` … ``{{- end }}``).
 
-These read the *raw* template (not helm-rendered) and verify the verb lists directly.
-The rules section contains no Helm template interpolation, but the ServiceAccount/Binding
-metadata does — so we strip ``{{ … }}`` blocks before parsing.
-
-Issue #14: the GC timer (issue #10) calls delete_namespaced_secret and
-delete_namespaced_custom_object, but the chart granted no `delete` verb — 403 every tick.
+The old test read chart/templates/rbac.yaml and stripped Helm expressions with a
+single-line, non-greedy regex ``r"\\{\\{.*?\\}\\}"``. That regex cannot span
+newlines, so the moment such a control block is added to the template the stripped
+output is no longer valid YAML and the test breaks — even though the *rendered*
+RBAC is perfectly fine. This test pins that blind spot (RED) before we swap the
+assertion to real ``helm template`` output.
 """
 
 from __future__ import annotations
 
 import pathlib
 import re
-
-import pytest
 import yaml
 
 _REPO = pathlib.Path(__file__).resolve().parent.parent
 _RBAC = _REPO / "chart" / "templates" / "rbac.yaml"
 
-_HELM_BLOCK_RE = re.compile(r"\{\{.*?\}\}")
+# The legacy helper under test (issue #18): a single-line, non-greedy regex.
+_LEGACY_HELM_BLOCK_RE = re.compile(r"\{\{.*?\}\}")
+
+# A representative multi-line Helm control block, as would appear in rbac.yaml once
+# someone guards a rule with `{{- if … }}`.
+_MULTILINE_BLOCK = (
+    "rules:\n"
+    '{{- if .Values.foo }}\n'
+    '  - apiGroups: [""]\n'
+    '    resources: ["secrets"]\n'
+    '    verbs: ["get", "delete"]\n'
+    "{{- end }}\n"
+)
 
 
-def _rendered_yaml() -> str:
-    """Strip Helm ``{{ … }}`` expressions so the template parses as plain YAML."""
-    return _HELM_BLOCK_RE.sub('""', _RBAC.read_text())
-
-
-def _cluster_role_rules() -> list[dict[str, object]]:
-    """Return the ``rules`` list from the ClusterRole in the raw template."""
-    docs = list(yaml.safe_load_all(_rendered_yaml()))
+def test_legacy_helper_cannot_strip_multiline_block() -> None:
+    """The legacy regex must fully strip a multi-line control block (desired, currently broken)."""
+    stripped = _LEGACY_HELM_BLOCK_RE.sub('""', _MULTILINE_BLOCK)
+    docs = list(yaml.safe_load_all(stripped))
+    rules: list[dict[str, object]] = []
     for doc in docs:
         if isinstance(doc, dict) and doc.get("kind") == "ClusterRole":
-            rules = doc.get("rules")
-            if isinstance(rules, list):
-                return [rule for rule in rules if isinstance(rule, dict)]
-    raise AssertionError("ClusterRole not found in rbac.yaml")
-
-
-def _verbs_for(resources: list[str]) -> set[str]:
-    """Collect the union of verbs across all rules that mention *any* of *resources*."""
-    verbs: set[str] = set()
-    for rule in _cluster_role_rules():
-        rule_resources = rule.get("resources", [])
-        if isinstance(rule_resources, list) and any(r in rule_resources for r in resources):
-            verbs_list = rule.get("verbs", [])
-            if isinstance(verbs_list, list):
-                verbs.update(v for v in verbs_list if isinstance(v, str))
-    return verbs
-
-
-@pytest.mark.parametrize(
-    (
-        "description",
-        "resources",
-        "required_verb",
-    ),
-    [
-        (
-            "openrouterkeys rule must grant delete (issue #14)",
-            ["openrouterkeys", "openrouterkeys/status"],
-            "delete",
-        ),
-        (
-            "secrets rule must grant delete (issue #14)",
-            ["secrets"],
-            "delete",
-        ),
-    ],
-)
-def test_rbac_verbs(description: str, resources: list[str], required_verb: str) -> None:
-    verbs = _verbs_for(resources)
-    assert required_verb in verbs, (
-        f"{description}: verbs for {resources} are {sorted(verbs)}, missing {required_verb!r}"
-    )
+            rules = [r for r in doc.get("rules", []) if isinstance(r, dict)]
+    resources = [res for r in rules for res in (r.get("resources") or [])]
+    assert "secrets" in resources

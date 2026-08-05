@@ -12,10 +12,10 @@ from typing import Any
 import kopf
 
 from .adapter import OpenRouterAdapter
-from .k8s import write_key_secret
+from .k8s import delete_cr, delete_key_secret, write_key_secret
 from .models import OpenRouterKeySpec
 from .ports import KeyState, OpenRouterPort
-from .reconcile import Create, NoOp, Rotate, Update, decide, desired_from_spec
+from .reconcile import Create, NoOp, Rotate, Update, decide, desired_from_spec, should_collect
 
 GROUP = "openrouter.teststuff.net"
 VERSION = "v1alpha1"
@@ -104,3 +104,28 @@ def delete_key(*, status: kopf.Status, **_: Any) -> None:
     key_hash = (status.get("openrouter") or {}).get("hash")
     if key_hash:
         _port().delete_key(key_hash)
+
+
+@kopf.timer(GROUP, VERSION, PLURAL, interval=900.0)
+def gc_expired_keys(
+    *,
+    spec: kopf.Spec,
+    name: str,
+    namespace: str | None,
+    **_: Any,
+) -> None:
+    """Periodic sweep (issue #10): collect an expired ephemeral CR and its Secret.
+
+    Nothing generates an event when the clock passes `expiresAt` (the spec never changes), so the
+    reconcile handlers would never fire for an expired CR. This timer is the thin caller: the
+    *decision* lives in the pure `reconcile.should_collect` (decision-table tested); here we only
+    do the I/O — delete the Secret (404-tolerant, since `write_key_secret` sets no ownerReferences)
+    then the CR itself.
+    """
+    parsed = OpenRouterKeySpec.model_validate(dict(spec))
+    if not should_collect(parsed, datetime.now(UTC)):
+        return
+    if namespace is None:
+        raise kopf.PermanentError("OpenRouterKey must be namespaced")
+    delete_key_secret(namespace, parsed.target_secret_name())
+    delete_cr(GROUP, VERSION, PLURAL, namespace, name)

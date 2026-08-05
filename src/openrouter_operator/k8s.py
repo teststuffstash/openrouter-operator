@@ -47,3 +47,29 @@ def write_key_secret(
             v1.replace_namespaced_secret(name=name, namespace=namespace, body=body)
         else:
             raise
+
+
+def delete_key_secret(namespace: str, name: str) -> None:
+    """Delete a session-key Secret, tolerating a 404.
+
+    `write_key_secret` sets no `ownerReferences`, so k8s GC has nothing to follow when the CR is
+    deleted — the GC path must delete the Secret explicitly. Some are already orphaned from
+    hand-sweeps, so a missing Secret is not an error.
+    """
+    v1 = _core_v1()
+    try:
+        v1.delete_namespaced_secret(name=name, namespace=namespace)
+    except client.ApiException as exc:
+        if exc.status != 404:
+            raise
+
+
+def delete_cr(group: str, version: str, plural: str, namespace: str, name: str) -> None:
+    """Delete a custom resource (used by the expiry GC timer to collect an expired CR)."""
+    try:
+        config.load_incluster_config()
+    except config.ConfigException:
+        config.load_kube_config()
+    client.CustomObjectsApi().delete_namespaced_custom_object(
+        group=group, version=version, namespace=namespace, plural=plural, name=name
+    )

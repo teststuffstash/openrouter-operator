@@ -7,6 +7,9 @@
     "kubernetes-helm@latest",
     "gh@latest"
   ],
+  "env": {
+    "VENV_DIR": "$HOME/.cache/devbox-venv/openrouter-operator"
+  },
   "shell": {
     "init_hook": [],
     "scripts": {

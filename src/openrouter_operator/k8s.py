@@ -8,11 +8,16 @@ from __future__ import annotations
 from kubernetes import client, config
 
 
-def _core_v1() -> client.CoreV1Api:
+def _load_kube_config() -> None:
+    """Load in-cluster config, falling back to the local kubeconfig off-cluster (dev)."""
     try:
         config.load_incluster_config()
     except config.ConfigException:
         config.load_kube_config()
+
+
+def _core_v1() -> client.CoreV1Api:
+    _load_kube_config()
     return client.CoreV1Api()
 
 
@@ -66,10 +71,7 @@ def delete_key_secret(namespace: str, name: str) -> None:
 
 def delete_cr(group: str, version: str, plural: str, namespace: str, name: str) -> None:
     """Delete a custom resource (used by the expiry GC timer to collect an expired CR)."""
-    try:
-        config.load_incluster_config()
-    except config.ConfigException:
-        config.load_kube_config()
+    _load_kube_config()
     client.CustomObjectsApi().delete_namespaced_custom_object(
         group=group, version=version, namespace=namespace, plural=plural, name=name
     )

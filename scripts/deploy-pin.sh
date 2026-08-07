@@ -34,6 +34,14 @@ if [ -z "$PR" ]; then
     --body "First-party chart-version bump (CI-opened, not Renovate). ArgoCD rolls the pinned openrouter-operator chart. Auto-merges (narrow homelab deploy bump)." \
     | grep -oE '[0-9]+$')"
 fi
+# The MECHANICAL lane (homelab docs/dependency-upgrades.md 2). `automerge` makes homelab's review
+# reflex SKIP this PR — a one-line CalVer chart bump is not worth an LLM reviewer session, and
+# homelab#104/#105 each burned TWO (dismissed-then-approved on push) before this existed. With
+# `dependencies` it also lets the renovate-approve reflex post the mechanical approval homelab's
+# require_approval ruleset needs. Applied OUTSIDE the `if` on purpose: `deploy/openrouter-operator`
+# is a long-lived branch, so `gh pr create` rarely runs and the reused PR would never get labelled.
+gh pr edit "$PR" --repo teststuffstash/homelab --add-label automerge --add-label dependencies \
+  || echo "::warning::could not label homelab#${PR} — the review reflex will not skip it"
 gh pr merge "$PR" --repo teststuffstash/homelab --auto --squash \
   || echo "::warning::could not arm auto-merge on homelab#${PR} (needs allow_auto_merge on homelab)"
 echo "→ homelab deploy PR #${PR} → ${VERSION}"

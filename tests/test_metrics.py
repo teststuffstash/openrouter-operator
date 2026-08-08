@@ -15,8 +15,8 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
-from openrouter_operator.metrics import KEY_OPS, KeyOpMetrics, MeteredPort
 
+from openrouter_operator.metrics import KEY_OPS, KeyOpMetrics, MeteredPort
 from openrouter_operator.models import ResetInterval
 from openrouter_operator.ports import KeyState, MintedKey, OpenRouterPort, RateLimited
 

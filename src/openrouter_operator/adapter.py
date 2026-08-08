@@ -11,11 +11,12 @@ Guardrails are NOT attached at key creation — that's a separate OpenRouter gua
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
 from .models import ResetInterval
-from .ports import KeyState, MintedKey
+from .ports import KeyState, MintedKey, RateLimited
 
 
 class OpenRouterAdapter:
@@ -29,7 +30,7 @@ class OpenRouterAdapter:
         return self._client.api_keys
 
     def get_key(self, key_hash: str) -> KeyState | None:
-        resp = self._keys.get(hash=key_hash)
+        resp = _call(self._keys.get, hash=key_hash)
         data = getattr(resp, "data", None)
         return _to_state(data) if data is not None else None
 
@@ -40,7 +41,8 @@ class OpenRouterAdapter:
         reset: ResetInterval | None,
         expires_at: datetime | None = None,
     ) -> MintedKey:
-        resp = self._keys.create(
+        resp = _call(
+            self._keys.create,
             name=name,
             limit=limit,
             limit_reset=_reset_value(reset),  # None -> null -> no reset window (session key)
@@ -49,10 +51,40 @@ class OpenRouterAdapter:
         return MintedKey(hash=str(resp.data.hash), value=str(resp.key))
 
     def update_key(self, key_hash: str, limit: float, reset: ResetInterval | None) -> None:
-        self._keys.update(hash=key_hash, limit=limit, limit_reset=_reset_value(reset))
+        _call(self._keys.update, hash=key_hash, limit=limit, limit_reset=_reset_value(reset))
 
     def delete_key(self, key_hash: str) -> None:
-        self._keys.delete(hash=key_hash)
+        _call(self._keys.delete, hash=key_hash)
+
+
+def _call(op: Callable[..., Any], **kwargs: Any) -> Any:
+    """Run an SDK call, translating a 429 into the port's typed `RateLimited` (issue #26).
+
+    This is the only place that touches SDK exception shapes; the retry *decision* is pure and
+    lives in `reconcile.decide_retry`. Duck-typed on purpose — the beta SDK's error classes move,
+    and anything we fail to recognise stays the original exception (normal backoff), never a
+    silently swallowed error.
+    """
+    try:
+        return op(**kwargs)
+    except Exception as exc:
+        status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+        if status != 429:
+            raise
+        raise RateLimited(_limit_name(exc)) from exc
+
+
+def _limit_name(exc: Exception) -> str:
+    """Best-effort limit identifier for a 429: the name the API gave, else the raw error text.
+    `decide_retry` matches markers as free text, so the fallback still classifies correctly."""
+    for source in (getattr(exc, "body", None), getattr(exc, "data", None)):
+        if isinstance(source, dict):
+            error = source.get("error")
+            metadata = error.get("metadata") if isinstance(error, dict) else None
+            named = metadata.get("limit_name") if isinstance(metadata, dict) else None
+            if named:
+                return str(named)
+    return str(exc)
 
 
 def _reset_value(reset: ResetInterval | None) -> str | None:

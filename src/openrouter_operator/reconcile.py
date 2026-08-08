@@ -7,7 +7,7 @@ The kopf handler turns a Plan into port calls; this module just decides *what* s
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from .models import OpenRouterKeySpec, ResetInterval
 from .ports import KeyState
@@ -126,6 +126,60 @@ def _is_dead(observed: KeyState, now: datetime) -> bool:
     if observed.disabled:
         return True
     return observed.expires_at is not None and observed.expires_at <= now
+
+
+# ── Retry classification for a 429 on the key API (issue #26) ───────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ParkUntilReset:
+    """Hold the op until the daily budget rolls over — retrying before then CANNOT succeed."""
+
+    delay_s: float
+
+
+@dataclass(frozen=True)
+class Backoff:
+    """Not provably a daily limit: let the caller's normal exponential backoff handle it."""
+
+
+RetryPlan = ParkUntilReset | Backoff
+
+# Substrings that mark a requests-per-DAY budget. The incident limit is `keys-modify-api-rpd-v2`;
+# match on markers rather than that exact id so a `-v3` (or a spelled-out message) still parks.
+DAILY_LIMIT_MARKERS = ("rpd", "per-day", "per_day", "requests-per-day", "daily")
+
+# Floor on the park. A 429 landing seconds before midnight would otherwise compute a ~0s delay and
+# hot-spin across the boundary — exactly the hammer this fix removes.
+MIN_PARK_S = 60.0
+
+
+def decide_retry(limit_name: str | None, now: datetime) -> RetryPlan:
+    """Decide how to retry a 429 from the key API, given the limit the port reported.
+
+    OpenRouter's `keys-modify-api-rpd-v2` is calendar-bound: it resets at UTC midnight and nothing
+    else clears it (proven live on 2026-08-08 — a top-up from $0.17 to $20.17 left the 429s at an
+    unchanged rate, so there is deliberately no balance-recovery re-probe here). Parking until the
+    reset is therefore the only retry that can succeed, and a hot retry before it is pure hammer.
+
+    Anything NOT provably daily backs off normally: a per-minute burst limit clears in seconds, so
+    parking it for hours would stall reconcile far worse than the limit itself, and an unnamed 429
+    could be either. Both directions of that trade-off are pinned in the decision table.
+    """
+    if limit_name is None:
+        return Backoff()
+    haystack = limit_name.lower()
+    if not any(marker in haystack for marker in DAILY_LIMIT_MARKERS):
+        return Backoff()
+    return ParkUntilReset(max(seconds_until_daily_reset(now), MIN_PARK_S))
+
+
+def seconds_until_daily_reset(now: datetime) -> float:
+    """Seconds from `now` (any aware clock) until the next UTC midnight, when the rpd budget rolls
+    over. Normalised to UTC first: the reset is the API's calendar day, not the reporter's."""
+    now_utc = now.astimezone(UTC)
+    next_reset = (now_utc + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return (next_reset - now_utc).total_seconds()
 
 
 # Grace window before an expired ephemeral CR is garbage-collected (issue #10). The key self-

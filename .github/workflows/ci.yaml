@@ -9,6 +9,13 @@ on:
   pull_request:
     branches: [master]
 
+# One live run per PR (org standard — homelab docs/ci.md §Concurrency, from oracle-fleet#222):
+# a superseded PR head's run cancels instead of queuing; push/master runs keep their own serial
+# group and never cancel (a cancelled push run can leave a publish half-written).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   ci:
     runs-on: homelab-ephemeral

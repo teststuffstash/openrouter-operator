@@ -41,6 +41,7 @@ This is a deliberate testing choice (see the homelab `docs/agents/` discussion):
 | `models.py` | the CR spec (Pydantic, validated) | ✅ |
 | `ports.py` | the `OpenRouterPort` Protocol + value types | ✅ |
 | `reconcile.py` | `decide(desired, observed) -> Plan` — pure, the decision table | ✅ |
+| `metrics.py` | key-API op counters (per UTC day) + the metering port wrapper | ✅ |
 | `adapter.py` | the Protocol via the `openrouter` SDK | I/O boundary |
 | `k8s.py` | write the key into a Secret | I/O boundary |
 | `operator.py` | kopf handlers (parse → observe → decide → apply) | I/O boundary |
@@ -58,6 +59,10 @@ To run the operator for real you also need the SDK + a management key:
 uv sync --extra sdk
 OPENROUTER_MANAGEMENT_KEY=sk-or-... kopf run -m openrouter_operator.operator
 ```
+
+The operator exports key-API op counters on `:9090/metrics` (issue #26 — the daily `keys-modify`
+budget is a real capacity dimension). `METRICS_PORT` / `METRICS_ADDR` move it, `METRICS_ENABLED=false`
+turns it off; the chart-side Service + ServiceMonitor + alert rules land with issue #27.
 
 ## Deploy
 

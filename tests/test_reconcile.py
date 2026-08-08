@@ -5,22 +5,28 @@ offline, no SDK. A reviewer can see a missing case in the table.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from openrouter_operator.adapter import _to_state
 from openrouter_operator.models import OpenRouterKeySpec, ResetInterval
-from openrouter_operator.ports import KeyState, MintedKey, OpenRouterPort
+from openrouter_operator.ports import KeyState, MintedKey, OpenRouterPort, RateLimited
 from openrouter_operator.reconcile import (
+    MIN_PARK_S,
+    Backoff,
     Create,
     Desired,
     NoOp,
+    ParkUntilReset,
     Plan,
+    RetryPlan,
     Rotate,
     Update,
     decide,
+    decide_retry,
     desired_from_spec,
     should_collect,
 )
@@ -319,3 +325,124 @@ def test_fake_port_satisfies_protocol() -> None:
     assert port.get_key("x") is None
     minted = port.create_key("demo-agent", 1.0, ResetInterval.weekly)
     assert minted.value.startswith("sk-or-")
+
+
+# ── rpd-class 429 -> park until the UTC reset (issue #26) ───────────────────────────────────────
+# `keys-modify-api-rpd-v2` is a requests-per-DAY limit on the key API. Once it is exhausted NO
+# retry can succeed until the counter rolls over at UTC midnight, but kopf's default exponential
+# backoff hot-retried it anyway (~28/min fleet-wide, 434 429s in 15 min) and wedged 13 deletions on
+# their finalizers. So the retry decision is a pure function of the limit the port reports — a
+# per-MINUTE limit must still back off normally (parking that for hours would stall reconcile),
+# and an unnamed 429 is not provably daily. The SDK's exception classes never leave adapter.py:
+# the port raises a typed `RateLimited`, and this table is the whole classification.
+
+_INCIDENT_LIMIT = "keys-modify-api-rpd-v2"
+_RL_NOW = datetime(2026, 6, 29, 19, 40, tzinfo=UTC)  # 4h20m (15600s) before the UTC reset
+
+
+@pytest.mark.parametrize(
+    ("description", "limit_name", "now", "expected", "expected_delay"),
+    [
+        (
+            "the incident limit (rpd) -> park until the UTC reset",
+            _INCIDENT_LIMIT,
+            _RL_NOW,
+            ParkUntilReset,
+            15600.0,
+        ),
+        (
+            "requests-per-day spelled out, mixed case -> park",
+            "Requests-Per-Day quota exhausted",
+            _RL_NOW,
+            ParkUntilReset,
+            15600.0,
+        ),
+        (
+            "per-MINUTE burst limit -> plain backoff (a 4h park would stall reconcile)",
+            "keys-modify-api-rpm-v1",
+            _RL_NOW,
+            Backoff,
+            None,
+        ),
+        (
+            "429 the API did not name -> backoff (not provably daily)",
+            None,
+            _RL_NOW,
+            Backoff,
+            None,
+        ),
+        (
+            "rpd 429 seconds before the reset -> floored, never a 0s hot spin",
+            _INCIDENT_LIMIT,
+            datetime(2026, 6, 29, 23, 59, 30, tzinfo=UTC),
+            ParkUntilReset,
+            MIN_PARK_S,
+        ),
+        (
+            "clock reported in a non-UTC offset -> reset is still UTC midnight",
+            _INCIDENT_LIMIT,
+            datetime(2026, 6, 29, 19, 40, tzinfo=timezone(timedelta(hours=3))),  # = 16:40Z
+            ParkUntilReset,
+            26400.0,
+        ),
+    ],
+)
+def test_decide_retry(
+    description: str,
+    limit_name: str | None,
+    now: datetime,
+    expected: type[RetryPlan],
+    expected_delay: float | None,
+) -> None:
+    plan = decide_retry(limit_name, now)
+    assert isinstance(plan, expected), description
+    if isinstance(plan, ParkUntilReset):
+        assert plan.delay_s == expected_delay, description
+
+
+class _RpdLimitedPort:
+    """A fake port in the incident's shape: every key-MODIFY op hits the exhausted daily limit.
+
+    Reads are unaffected — it was create/patch/delete that hammered, and `delete_key` specifically
+    that wedged 13 CRs on their finalizers.
+    """
+
+    def get_key(self, key_hash: str) -> KeyState | None:
+        return _state()
+
+    def create_key(
+        self,
+        name: str,
+        limit: float,
+        reset: ResetInterval | None,
+        expires_at: datetime | None = None,
+    ) -> MintedKey:
+        raise RateLimited(_INCIDENT_LIMIT)
+
+    def update_key(self, key_hash: str, limit: float, reset: ResetInterval | None) -> None:
+        raise RateLimited(_INCIDENT_LIMIT)
+
+    def delete_key(self, key_hash: str) -> None:
+        raise RateLimited(_INCIDENT_LIMIT)
+
+
+@pytest.mark.parametrize(
+    ("description", "op"),
+    [
+        ("create (the mint every dispatch defers on)", lambda p: p.create_key("demo", 1.0, None)),
+        ("update (the budget patch)", lambda p: p.update_key("GK1", 1.0, None)),
+        ("delete (the path that wedged 13 finalizers)", lambda p: p.delete_key("GK1")),
+    ],
+)
+def test_every_key_modify_path_parks(
+    description: str, op: Callable[[OpenRouterPort], object]
+) -> None:
+    port: OpenRouterPort = _RpdLimitedPort()
+    with pytest.raises(RateLimited) as caught:
+        op(port)
+    assert isinstance(decide_retry(caught.value.limit_name, _RL_NOW), ParkUntilReset), description
+
+
+def test_read_path_is_untouched() -> None:
+    # the park is for key-MODIFY ops; a read still returns state (no blanket outage)
+    assert _RpdLimitedPort().get_key("GK1") is not None

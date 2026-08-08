@@ -5,30 +5,83 @@ All the judgement lives in reconcile.decide() (pure, tested). This module only d
 
 from __future__ import annotations
 
+import functools
 import os
+import threading
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any, ParamSpec, TypeVar
 
 import kopf
 
 from .adapter import OpenRouterAdapter
 from .k8s import delete_cr, delete_key_secret, write_key_secret
+from .metrics import KeyOpMetrics, MeteredPort
 from .models import OpenRouterKeySpec
-from .ports import KeyState, OpenRouterPort
-from .reconcile import Create, NoOp, Rotate, Update, decide, desired_from_spec, should_collect
+from .ports import KeyState, OpenRouterPort, RateLimited
+from .reconcile import (
+    Create,
+    NoOp,
+    ParkUntilReset,
+    Rotate,
+    Update,
+    decide,
+    decide_retry,
+    desired_from_spec,
+    should_collect,
+)
 
 GROUP = "openrouter.teststuff.net"
 VERSION = "v1alpha1"
 PLURAL = "openrouterkeys"
 
+P = ParamSpec("P")
+R = TypeVar("R")
+
+# Process-wide op counters (issue #26). Every port the handlers use is metered, so the daily
+# key-API spend is measured at the only place it can be spent.
+METRICS = KeyOpMetrics()
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
 
 def _port() -> OpenRouterPort:
-    return OpenRouterAdapter(os.environ["OPENROUTER_MANAGEMENT_KEY"])
+    return MeteredPort(OpenRouterAdapter(os.environ["OPENROUTER_MANAGEMENT_KEY"]), METRICS, _now)
+
+
+def _park_on_daily_limit(fn: Callable[P, R]) -> Callable[P, R]:
+    """Turn an exhausted daily key-API budget into ONE parked retry (issue #26).
+
+    kopf's default backoff hot-retries a `keys-modify-api-rpd-*` 429 that cannot clear before UTC
+    midnight — 434 429s in 15 minutes, and every deletion stuck on its finalizer. A TemporaryError
+    with the delay from `decide_retry` re-queues the op once, at the reset. Non-daily 429s (and
+    everything else) propagate untouched, keeping kopf's normal backoff.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return fn(*args, **kwargs)
+        except RateLimited as exc:
+            plan = decide_retry(exc.limit_name, _now())
+            if isinstance(plan, ParkUntilReset):
+                raise kopf.TemporaryError(
+                    f"OpenRouter daily key-API budget exhausted ({exc.limit_name}); parked "
+                    f"{plan.delay_s:.0f}s until the UTC reset",
+                    delay=plan.delay_s,
+                ) from exc
+            raise
+
+    return wrapper
 
 
 @kopf.on.create(GROUP, VERSION, PLURAL)
 @kopf.on.update(GROUP, VERSION, PLURAL)
 @kopf.on.resume(GROUP, VERSION, PLURAL)
+@_park_on_daily_limit
 def reconcile_key(
     *,
     spec: kopf.Spec,
@@ -100,10 +153,49 @@ def _observed_status(state: KeyState) -> dict[str, Any]:
 
 
 @kopf.on.delete(GROUP, VERSION, PLURAL)
+@_park_on_daily_limit
 def delete_key(*, status: kopf.Status, **_: Any) -> None:
     key_hash = (status.get("openrouter") or {}).get("hash")
     if key_hash:
         _port().delete_key(key_hash)
+
+
+class _MetricsHandler(BaseHTTPRequestHandler):
+    """Serve the op counters at /metrics. Read-only, no request body, fixed literal labels."""
+
+    # do_GET (not do_get): BaseHTTPRequestHandler dispatches on the method name verbatim.
+    def do_GET(self) -> None:
+        if self.path.split("?")[0] != "/metrics":
+            self.send_error(404)
+            return
+        body = METRICS.render(_now()).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        """Silence per-scrape stderr logging — a 30s scrape would drown the operator's own log."""
+
+
+@kopf.on.startup()
+def start_metrics_exporter(**_: Any) -> None:
+    """Stand up the /metrics endpoint (issue #26 deliverable b).
+
+    The chart exposes only kopf's health port today, so this is the exporter surface the metrics
+    Service / ServiceMonitor wiring in #27 attaches to. Bind address and port are env-configurable
+    (METRICS_ADDR / METRICS_PORT, and METRICS_ENABLED=false to opt out) precisely so that chart
+    wiring needs no code change here. Daemon thread: it must never hold up operator shutdown.
+    """
+    if os.environ.get("METRICS_ENABLED", "true").strip().lower() in {"0", "false", "no"}:
+        return
+    # Default 0.0.0.0: the pod network is the boundary, and #27 fronts it with a metrics Service.
+    addr = os.environ.get("METRICS_ADDR", "0.0.0.0")
+    server = ThreadingHTTPServer(
+        (addr, int(os.environ.get("METRICS_PORT", "9090"))), _MetricsHandler
+    )
+    threading.Thread(target=server.serve_forever, name="metrics-exporter", daemon=True).start()
 
 
 @kopf.timer(GROUP, VERSION, PLURAL, interval=900.0)

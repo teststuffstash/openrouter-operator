@@ -14,6 +14,23 @@ from typing import Protocol
 from .models import ResetInterval
 
 
+class RateLimited(Exception):
+    """A 429 from the OpenRouter key API, raised by the port (issue #26).
+
+    The SDK's own exception classes stay behind `adapter.py` — this typed error is how a 429
+    crosses the port, so the pure `reconcile.decide_retry` can classify it (an rpd-class limit
+    parks until the UTC reset; anything else backs off normally) without importing the SDK.
+
+    `limit_name` is the limit the API named (e.g. `keys-modify-api-rpd-v2`), falling back to the
+    raw error text when it named none — classification reads it as free text either way, so a
+    payload shape change degrades to a normal backoff rather than a mis-park.
+    """
+
+    def __init__(self, limit_name: str | None = None) -> None:
+        super().__init__(limit_name or "rate limited")
+        self.limit_name = limit_name
+
+
 @dataclass(frozen=True)
 class KeyState:
     """Observed state of a runtime key on OpenRouter.
@@ -43,7 +60,11 @@ class MintedKey:
 
 
 class OpenRouterPort(Protocol):
-    """The operations the operator needs from OpenRouter. The adapter implements this."""
+    """The operations the operator needs from OpenRouter. The adapter implements this.
+
+    Every method may raise `RateLimited` when OpenRouter answers 429; the key-MODIFY ops
+    (create/update/delete) are the ones metered by the daily `keys-modify-api-rpd-*` budget.
+    """
 
     def get_key(self, key_hash: str) -> KeyState | None: ...
 

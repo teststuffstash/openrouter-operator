@@ -22,6 +22,7 @@ from .metrics import KeyOpMetrics, MeteredPort, credit_poll_interval_s, poll_acc
 from .models import OpenRouterKeySpec
 from .ports import AccountPort, KeyState, OpenRouterPort, RateLimited
 from .reconcile import (
+    RENEW_THRESHOLD_S,
     Create,
     NoOp,
     ParkUntilReset,
@@ -43,6 +44,12 @@ R = TypeVar("R")
 # Process-wide op counters (issue #26). Every port the handlers use is metered, so the daily
 # key-API spend is measured at the only place it can be spent.
 METRICS = KeyOpMetrics()
+
+# How often the age-renewal timer looks at an expiring key (issue #25). Derived, not chosen: half
+# the renewal threshold means two passes always fall inside the window, so one missed or errored
+# pass still leaves another before the key dies. It is the relationship that matters — a bare
+# number here could drift past the threshold and quietly reintroduce the death this fixes.
+RENEW_TIMER_INTERVAL_S = RENEW_THRESHOLD_S / 2
 
 
 def _now() -> datetime:
@@ -91,6 +98,40 @@ def reconcile_key(
     patch: kopf.Patch,
     **_: Any,
 ) -> None:
+    _reconcile(spec, status, namespace, patch)
+
+
+@kopf.timer(GROUP, VERSION, PLURAL, interval=RENEW_TIMER_INTERVAL_S)
+@_park_on_daily_limit
+def renew_aging_keys(
+    *,
+    spec: kopf.Spec,
+    status: kopf.Status,
+    namespace: str | None,
+    patch: kopf.Patch,
+    **_: Any,
+) -> None:
+    """Periodic pass so a key can be rotated before it dies of AGE (issue #25).
+
+    A key ageing out generates no event — the spec does not change when its clock runs down, so the
+    create/update/resume handlers never fire for it, and a ride that outlasted its key's honest
+    window simply 401-stormed (sleep-tracking#96). Same shape as #10's GC timer: the *decision* is
+    the pure `decide()` (which renews only inside the window, and only on spend it can read), this
+    is just what makes the clock reach it. Twice per renewal window, so one missed or errored pass
+    still leaves a pass before the key dies.
+
+    Only CRs that carry an `expiresAt` are polled: a standing project key has no deadline to watch,
+    and reading it here would spend key-API budget on a question with no answer.
+    """
+    parsed = OpenRouterKeySpec.model_validate(dict(spec))
+    if parsed.expires_at is None:
+        return
+    _reconcile(spec, status, namespace, patch)
+
+
+def _reconcile(
+    spec: kopf.Spec, status: kopf.Status, namespace: str | None, patch: kopf.Patch
+) -> None:
     parsed = OpenRouterKeySpec.model_validate(dict(spec))
     desired = desired_from_spec(parsed)
     if namespace is None:  # the CRD is Namespaced; satisfy the type + guard regardless
@@ -114,10 +155,16 @@ def reconcile_key(
         )
         patch.status["openrouter"] = _key_status(port, minted.hash)
     elif isinstance(plan, Rotate):
-        # Expiry drift PATCH can't fix (issue #6): mint fresh + swap the Secret FIRST, delete the
-        # old key LAST — a consumer never observes a window without a live credential.
+        # Expiry drift PATCH can't fix (issue #6), or a key about to die of age (issue #25): mint
+        # fresh + swap the Secret FIRST, delete the old key LAST — a consumer never observes a
+        # window without a live credential. Mint from `plan.desired`, NOT the spec-derived desired:
+        # an age renewal carries a reduced cap and a fresh window in it, and minting the spec's
+        # values instead would hand the session its whole budget back.
         minted = port.create_key(
-            desired.name, desired.limit, desired.reset_interval, desired.expires_at
+            plan.desired.name,
+            plan.desired.limit,
+            plan.desired.reset_interval,
+            plan.desired.expires_at,
         )
         write_key_secret(
             namespace,
@@ -127,7 +174,11 @@ def reconcile_key(
             parsed.guardrail or "",
         )
         patch.status["openrouter"] = _key_status(port, minted.hash)
-        port.delete_key(plan.key_hash)
+        if plan.delete_old:
+            # Age renewals skip this on purpose: the old key lapses on its own within the renewal
+            # threshold, and deleting it now would 401 any consumer still holding a cached
+            # reference to the pre-swap Secret.
+            port.delete_key(plan.key_hash)
     elif isinstance(plan, Update):
         port.update_key(plan.key_hash, desired.limit, desired.reset_interval)
         patch.status["openrouter"] = _key_status(port, plan.key_hash)

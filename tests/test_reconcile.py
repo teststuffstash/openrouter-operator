@@ -11,7 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from openrouter_operator.adapter import _to_state
+from openrouter_operator.adapter import OpenRouterAdapter, _to_state
+from openrouter_operator.metrics import KeyOpMetrics, MeteredPort
 from openrouter_operator.models import OpenRouterKeySpec, ResetInterval
 from openrouter_operator.ports import KeyState, MintedKey, OpenRouterPort, RateLimited
 from openrouter_operator.reconcile import (
@@ -446,3 +447,96 @@ def test_every_key_modify_path_parks(
 def test_read_path_is_untouched() -> None:
     # the park is for key-MODIFY ops; a read still returns state (no blanket outage)
     assert _RpdLimitedPort().get_key("GK1") is not None
+
+
+# ── delete is idempotent: an upstream 404 IS deleted (issue #30) ────────────────────────────────
+# The #26 park drained the rpd-wedged deletions, but 11 CRs stayed wedged on a SECOND class: their
+# keys no longer exist upstream (deleted mid-storm, or self-destructed at expiry), so every delete
+# retry 404s, the SDK error propagates, kopf backs off forever and the finalizer never clears. A
+# 404 on delete IS success — the desired state ("key absent upstream") already holds, which is the
+# whole port contract for a delete. The translation is deliberately DELETE-scoped: a 404 on
+# get/update means the key vanished under us mid-reconcile and must still surface.
+#
+# Same seam and same duck-typing as the #26 429 translation, so this table is the classification:
+# what counts as "already gone" vs what still reaches kopf's backoff.
+
+
+class _NotFoundResponseError(Exception):
+    """The incident error, by shape: the beta SDK raised
+    `openrouter.errors.notfoundresponse_error.NotFoundResponseError: API key not found`, and the
+    operator log carries no HTTP status alongside it — so this row is matched by class NAME."""
+
+
+class _HTTPError(Exception):
+    """An SDK error that names its HTTP status the way `_call`'s 429 translation reads it."""
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"HTTP {status_code}")
+        self.status_code = status_code
+
+
+def _adapter_deleting(raises: Exception | None) -> tuple[OpenRouterAdapter, list[str]]:
+    """A REAL `OpenRouterAdapter` wired to a fake SDK client, so the table exercises the actual
+    translation rather than a restatement of it. Built without `__init__` on purpose: the
+    `openrouter` extra is deliberately not installed for CI, and what is under test here is our
+    error handling, never the SDK's."""
+    seen: list[str] = []
+
+    def delete(*, hash: str) -> None:  # kwarg name is the SDK's (keyword-only `hash=`)
+        seen.append(hash)
+        if raises is not None:
+            raise raises
+
+    adapter = object.__new__(OpenRouterAdapter)
+    adapter._client = SimpleNamespace(api_keys=SimpleNamespace(delete=delete))
+    return adapter, seen
+
+
+@pytest.mark.parametrize(
+    ("description", "raises", "expected"),
+    [
+        ("key exists upstream -> deleted", None, None),
+        (
+            "absent upstream (the incident NotFound) -> success, finalizer clears",
+            _NotFoundResponseError("API key not found"),
+            None,
+        ),
+        ("absent upstream, error names HTTP 404 -> success", _HTTPError(404), None),
+        (
+            "rpd 429 -> still RateLimited (the #26 park is untouched)",
+            _HTTPError(429),
+            RateLimited,
+        ),
+        ("upstream 500 -> propagates to kopf backoff", _HTTPError(500), _HTTPError),
+        (
+            "unrecognised error -> propagates (never silently swallowed)",
+            RuntimeError("boom"),
+            RuntimeError,
+        ),
+    ],
+)
+def test_delete_key_is_idempotent(
+    description: str, raises: Exception | None, expected: type[Exception] | None
+) -> None:
+    adapter, seen = _adapter_deleting(raises)
+    if expected is None:
+        adapter.delete_key("GKgone")  # returns normally == the desired state already holds
+    else:
+        with pytest.raises(expected):
+            adapter.delete_key("GKgone")
+    assert seen == ["GKgone"], description  # the delete was attempted, not skipped
+
+
+def test_absent_key_delete_still_counts_as_a_spent_op() -> None:
+    """A 404'd delete still spent a key-API request, so it stays counted under `op="delete"` (#28's
+    meter) — the count is honest even though nothing was deleted. And it must NOT land in the
+    rate-limited series: that one is the parked-429 signal, not "this op did not do work"."""
+    adapter, _ = _adapter_deleting(_NotFoundResponseError("API key not found"))
+    metrics = KeyOpMetrics()
+    port: OpenRouterPort = MeteredPort(adapter, metrics, lambda: NOW)
+
+    port.delete_key("GKgone")  # returns: kopf's delete handler completes, the finalizer clears
+
+    rendered = metrics.render(NOW)
+    assert 'openrouter_key_api_ops_today{op="delete"} 1' in rendered
+    assert 'openrouter_key_api_rate_limited_total{limit_class="daily"} 0' in rendered

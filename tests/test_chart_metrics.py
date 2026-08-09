@@ -14,8 +14,15 @@ Two constraints are pinned here because they are the ones that fail silently in 
   homelab#163, verified live 2026-08-06).
 * **no alert ships without a series behind it** — ``test_every_alert_has_a_series_behind_it``
   checks each metric an ``expr`` names against what ``KeyOpMetrics.render()`` actually exposes.
-  This is why the account-balance low-water alert of the issue's deliverable 3 is *not* here: its
-  gauge is deferred to #29, so the rule would evaluate against nothing and never fire.
+  That guard is why deliverable 3's account-balance low-water alert could not ship with #27: its
+  gauge was deferred to #29, so the rule would have evaluated against nothing and never fired.
+
+#29 landed that gauge (PR #35), and ``KeyOpMetrics.render()`` composes
+``AccountCreditMetrics.render()`` into the same exposition precisely so this guard keeps seeing
+one surface — so the balance alert ships here as #33, with no change to the guard itself. Its own
+cases pin a third failure mode the other two do not cover: a mark that *scales* has several ways
+to end up unsatisfiable (a top-up inverting the trend, an idle account, a dead poller), and an
+alert that cannot fire is indistinguishable from a healthy system.
 """
 
 from __future__ import annotations

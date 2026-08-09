@@ -1,12 +1,15 @@
 {{- if and .Values.metrics.enabled .Values.metrics.prometheusRule.enabled }}
 {{- $rpd := .Values.metrics.prometheusRule.keyOpsPerDay }}
-# Alert rules for the key-management API (issue #27, deliverable 3).
+{{- $bal := .Values.metrics.prometheusRule.accountBalance }}
+# Alert rules for the two exhaustions that stacked in the 2026-08-08 fleet stall (issue #27,
+# deliverable 3): the key-management API's daily op budget, and the account credit those keys
+# spend out of. One group each — they are different subsystems with different remedies (wait out
+# the UTC reset vs top up the account).
 #
-# Only the key-ops/day alert ships. The issue's second alert — account balance below a self-scaling
-# low-water mark — is deliberately WITHHELD: #26 left the balance gauge out (it could not verify the
-# provisioning key against GET /api/v1/credits from the sandbox) and that half is filed as #29. A
-# rule with no series behind it never fires, so it would read as "healthy" forever — the exact
-# blind spot #26 exists to close. It lands with #29, not before.
+# The balance alert was WITHHELD by PR #32 and lands here as #33: #26/#29 had not exported the
+# gauge yet, and a rule with no series behind it never fires, so it would have read as "healthy"
+# forever — the exact blind spot the issue exists to close. `test_every_alert_has_a_series_behind_it`
+# keeps that structural rather than advisory.
 #
 # Picked up cluster-wide without a platform change: kube-prometheus-stack runs with
 # `ruleSelectorNilUsesHelmValues: false`.
@@ -47,4 +50,49 @@ spec:
               {{ $rpd.ceiling }}/day `keys-modify-api-rpd-v2` ceiling. Once that ceiling is reached
               every mint, budget patch and delete is rejected until the next UTC midnight: new
               OpenRouterKey resources stall unminted and deleted ones wedge on their finalizers.
+    - name: openrouter-operator.account
+      rules:
+        - alert: OpenRouterAccountCreditNearlyExhausted
+          # A self-scaling low-water mark: the balance is worth less than `burnMultiplier` days of
+          # what the fleet actually spends. #29 exports no usage counter, so the burn IS the
+          # balance gauge's own 24h decrease — there is no second series to rate() against.
+          #
+          # Each term below exists because without it the rule is quietly unsatisfiable, which for
+          # an alert is indistinguishable from "everything is fine":
+          #   clamp_min(…, 0)  a top-up RAISES the gauge, making delta positive and the derived
+          #                    burn negative; `balance < 2 * negative` can never hold. Clamped, an
+          #                    inverted trend degrades to "burn unknown" and the floor takes over.
+          #   or … < floorUsd  a zero or unknown burn leaves a zero mark, equally unsatisfiable.
+          #                    The floor is a disjunct rather than a clamp_min around the whole
+          #                    mark on purpose: the gauge is NaN until the first successful poll,
+          #                    clamp_min(NaN, x) is NaN in PromQL, and that NaN would swallow the
+          #                    floor for the whole 24h the range window covers.
+          #   and time() - …   the false-alarm direction. A reading nobody refreshed is not
+          #                    evidence of a drained account. The timestamp is 0 when no poll ever
+          #                    succeeded, so a never-polled operator is maximally stale and cannot
+          #                    page. Poller death is its own symptom, on
+          #                    openrouter_account_credit_poll_failures_total, not this rule.
+          expr: >-
+            (
+            openrouter_account_credit_usd < {{ $bal.burnMultiplier }} * clamp_min(-delta(openrouter_account_credit_usd[24h]), 0)
+            or
+            openrouter_account_credit_usd < {{ $bal.floorUsd }}
+            )
+            and
+            (time() - openrouter_account_credit_updated_timestamp_seconds) < {{ $bal.maxStalenessSeconds }}
+          for: {{ $bal.for }}
+          labels:
+            severity: warning # never `info`: the stock InfoInhibitor silently suppresses those
+            # capacity/standing fact — the remedy is a human topping up the account, never a code
+            # change (precedent: SubscriptionDispatchLimited).
+            triage: none
+          annotations:
+            summary: OpenRouter account credit is nearly exhausted
+            description: >-
+              The OpenRouter account has ${{ `{{ $value }}` }} of credit left — under
+              {{ $bal.burnMultiplier }}x its own trailing-24h burn (floor ${{ $bal.floorUsd }}), so
+              roughly {{ $bal.burnMultiplier }} days of runway at the current rate. At zero, every
+              request the minted keys make is rejected while the operator keeps reconciling and the
+              OpenRouterKey resources keep reporting healthy — the keys still exist, only the
+              traffic through them fails. Top up the account; no code change fixes this.
 {{- end }}

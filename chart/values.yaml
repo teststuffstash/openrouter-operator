@@ -43,3 +43,24 @@ metrics:
       ceiling: 1000
       warnAtPercent: 70
       for: 10m
+    # Account credit low-water mark (issue #33). Self-scaling: the mark follows what the fleet
+    # actually spends, so it stays meaningful as usage grows instead of aging into a stale dollar
+    # figure. Burn is derived from the balance gauge's own 24h decrease — #29 exports no usage
+    # counter to rate() against.
+    accountBalance:
+      # Days of runway to warn at: the mark is burnMultiplier x the trailing-24h burn, so 2 fires
+      # with roughly two days left at the current rate.
+      burnMultiplier: 2
+      # Absolute floor, in USD, under the self-scaling mark. It carries the alert whenever burn is
+      # unknown or zero — a fresh operator, an idle day, or a top-up that inverted the trend —
+      # where the scaling term alone would be unsatisfiable. Like `ceiling` above, a PLACEHOLDER:
+      # nobody has measured this fleet's daily spend yet, so raise it once someone has.
+      floorUsd: 5
+      # How old the last successful credits poll may be before the alert goes quiet, in seconds.
+      # A reading nobody refreshed is not evidence of a drained account, and the poller defaults
+      # to every 300s, so this is ~12 missed polls. Poller death is its own symptom — watch
+      # `openrouter_account_credit_poll_failures_total`, not this rule.
+      maxStalenessSeconds: 3600
+      # Longer than the key-ops alert: ~2 days of runway is not a fast-moving symptom, and the
+      # balance only refreshes every 300s, so a short window would just flap on the threshold.
+      for: 30m

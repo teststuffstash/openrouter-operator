@@ -152,6 +152,33 @@ def rendered() -> list[dict[str, Any]]:
             ("spec", "groups", 0, "rules", 0, "labels", "triage"),
             "none",
         ),
+        # -- deliverable 3, second half: the account-balance low-water alert (issue #33) -----
+        # Its own group: the balance is account scope, not key-API scope — a different subsystem
+        # and a different remedy (top up credit vs wait out the UTC reset).
+        (
+            "balance-rule-group-is-named-by-subsystem",
+            "PrometheusRule",
+            ("spec", "groups", 1, "name"),
+            "openrouter-operator.account",
+        ),
+        (
+            "balance-alert-names-the-symptom",
+            "PrometheusRule",
+            ("spec", "groups", 1, "rules", 0, "alert"),
+            "OpenRouterAccountCreditNearlyExhausted",
+        ),
+        (
+            "balance-alert-severity-is-warning-never-info",
+            "PrometheusRule",
+            ("spec", "groups", 1, "rules", 0, "labels", "severity"),
+            "warning",
+        ),
+        (
+            "balance-alert-is-marked-no-agent-triage",
+            "PrometheusRule",
+            ("spec", "groups", 1, "rules", 0, "labels", "triage"),
+            "none",
+        ),
     ],
 )
 def test_rendered_manifest_field(
@@ -198,6 +225,69 @@ def test_alert_threshold_is_derived_from_values(
         f"metrics.prometheusRule.keyOpsPerDay.warnAtPercent={percent}",
     )
     assert expected_threshold in _alert_rules(docs)[0]["expr"], case
+
+
+def _expr(docs: list[dict[str, Any]], alert: str) -> str:
+    """The named alert's ``expr``, whitespace-collapsed so YAML folding is not part of the
+    assertion — only the PromQL is."""
+    matches = [r for r in _alert_rules(docs) if r["alert"] == alert]
+    assert len(matches) == 1, f"expected exactly one {alert}, got {len(matches)}"
+    return " ".join(str(matches[0]["expr"]).split())
+
+
+_BALANCE_ALERT = "OpenRouterAccountCreditNearlyExhausted"
+
+
+@pytest.mark.parametrize(
+    ("case", "fragment"),
+    [
+        # #29 ships no usage/spend counter, only the balance gauge — so trailing burn has to come
+        # from that gauge's own decrease. There is no second series to rate() against.
+        (
+            "burn comes from the balance gauge's own 24h decrease",
+            "-delta(openrouter_account_credit_usd[24h])",
+        ),
+        # Silent-never-fire #1: a top-up RAISES the gauge, so the delta goes positive and the
+        # derived burn negative — `balance < multiplier * negative` is unsatisfiable at any
+        # positive balance. Clamping the burn term at zero collapses that to "no burn known".
+        (
+            "a top-up cannot invert the self-scaling mark",
+            "clamp_min(-delta(openrouter_account_credit_usd[24h]), 0)",
+        ),
+        # Silent-never-fire #2: "no burn known" (or a freshly restarted operator) leaves a ZERO
+        # mark, equally unsatisfiable. The absolute floor is a separate disjunct rather than a
+        # clamp_min around the whole mark, because clamp_min(NaN, floor) is NaN in PromQL — the
+        # gauge reads NaN until the first successful poll, and that NaN would swallow the floor
+        # for the whole 24h the range covers.
+        ("an absolute floor fires on its own", "or openrouter_account_credit_usd < 5"),
+        # The false-alarm direction: a reading nobody has refreshed is not evidence of a drained
+        # account. metrics.py documents this idiom; the timestamp is 0 when no poll ever
+        # succeeded, so a never-polled operator reads as maximally stale and cannot page.
+        (
+            "a stale or never-polled reading cannot page",
+            "(time() - openrouter_account_credit_updated_timestamp_seconds) < 3600",
+        ),
+    ],
+)
+def test_balance_alert_survives_the_ways_it_could_silently_never_fire(
+    rendered: list[dict[str, Any]], case: str, fragment: str
+) -> None:
+    """The low-water mark scales with spend, so every term that could quietly zero it out — a
+    top-up, an idle account, a dead poller — is pinned here rather than left to review."""
+    assert fragment in _expr(rendered, _BALANCE_ALERT), case
+
+
+@pytest.mark.parametrize(
+    ("case", "setting", "fragment"),
+    [
+        ("the burn multiplier is tunable", "burnMultiplier=3", "usd < 3 * clamp_min("),
+        ("the absolute floor is tunable", "floorUsd=25", "or openrouter_account_credit_usd < 25"),
+        ("the freshness window is tunable", "maxStalenessSeconds=900", "seconds) < 900"),
+    ],
+)
+def test_balance_alert_mark_is_derived_from_values(case: str, setting: str, fragment: str) -> None:
+    docs = _helm_template(f"metrics.prometheusRule.accountBalance.{setting}")
+    assert fragment in _expr(docs, _BALANCE_ALERT), case
 
 
 def test_every_alert_has_a_series_behind_it(rendered: list[dict[str, Any]]) -> None:

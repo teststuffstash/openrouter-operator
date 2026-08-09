@@ -22,3 +22,24 @@ managementSecret:
 resources:
   requests: { cpu: 50m, memory: 128Mi }
   limits: { cpu: 500m, memory: 256Mi }
+
+# Prometheus wiring for the key-API op counters (issue #27). Default-on: the operator is always
+# deployed alongside monitoring, and the counters it exports are only useful once scraped.
+metrics:
+  enabled: true
+  port: 9090 # the exporter's port; the container port, Service and METRICS_PORT all follow it
+  serviceMonitor:
+    enabled: true # set false on a cluster without the prometheus-operator CRDs
+    interval: 30s
+    scrapeTimeout: 10s
+    additionalLabels: {} # e.g. {release: kube-prometheus-stack} when Prometheus selects on a label
+  prometheusRule:
+    enabled: true
+    additionalLabels: {}
+    keyOpsPerDay:
+      # OpenRouter does not publish the `keys-modify-api-rpd-v2` ceiling, and it is per-account.
+      # 1000 matches the only per-day request cap OpenRouter documents; treat it as a PLACEHOLDER
+      # and override it with the `X-RateLimit-Limit` header returned on a real 429.
+      ceiling: 1000
+      warnAtPercent: 70
+      for: 10m

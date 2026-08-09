@@ -1,0 +1,50 @@
+{{- if and .Values.metrics.enabled .Values.metrics.prometheusRule.enabled }}
+{{- $rpd := .Values.metrics.prometheusRule.keyOpsPerDay }}
+# Alert rules for the key-management API (issue #27, deliverable 3).
+#
+# Only the key-ops/day alert ships. The issue's second alert — account balance below a self-scaling
+# low-water mark — is deliberately WITHHELD: #26 left the balance gauge out (it could not verify the
+# provisioning key against GET /api/v1/credits from the sandbox) and that half is filed as #29. A
+# rule with no series behind it never fires, so it would read as "healthy" forever — the exact
+# blind spot #26 exists to close. It lands with #29, not before.
+#
+# Picked up cluster-wide without a platform change: kube-prometheus-stack runs with
+# `ruleSelectorNilUsesHelmValues: false`.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: openrouter-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: openrouter-operator
+    {{- with .Values.metrics.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: openrouter-operator.key-api
+      rules:
+        - alert: OpenRouterKeyOpsDailyBudgetNearlyExhausted
+          # `keys-modify-api-rpd-v2` bounds the MODIFY ops, so `get` is excluded: reads share the
+          # metric but not the budget, and counting them would fire on plain reconcile churn.
+          # sum() over one series per op — the Deployment is replicas:1/Recreate, so there is never
+          # a second instance to double-count. The gauge is process-local and rolls at UTC
+          # midnight (the same window the limit resets on); an operator restart re-reads as 0,
+          # which under-reports rather than false-alarms.
+          expr: sum(openrouter_key_api_ops_today{op=~"create|update|delete"}) > {{ divf (mulf $rpd.ceiling $rpd.warnAtPercent) 100 }}
+          for: {{ $rpd.for }}
+          labels:
+            severity: warning # never `info`: the stock InfoInhibitor silently suppresses those
+            # capacity/standing fact — the remedy is waiting for the UTC reset or raising the
+            # account's limit, never a code change. An agent triaging this would defer on the very
+            # limit the alert reports (precedent: SubscriptionDispatchLimited).
+            triage: none
+          annotations:
+            summary: OpenRouter key-API daily op budget is nearly exhausted
+            description: >-
+              The operator has issued {{ `{{ $value }}` }} key-modify operations (create/update/delete)
+              against the OpenRouter key API so far today, past {{ $rpd.warnAtPercent }}% of the
+              {{ $rpd.ceiling }}/day `keys-modify-api-rpd-v2` ceiling. Once that ceiling is reached
+              every mint, budget patch and delete is rejected until the next UTC midnight: new
+              OpenRouterKey resources stall unminted and deleted ones wedge on their finalizers.
+{{- end }}

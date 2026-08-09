@@ -28,8 +28,16 @@ spec:
               value: operator
             - name: USER
               value: operator
+            # operator.py reads these, so the chart re-points the exporter without a code change
+            - name: METRICS_ENABLED
+              value: {{ .Values.metrics.enabled | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.metrics.port | quote }}
           ports:
             - { containerPort: 8080, name: health }
+            {{- if .Values.metrics.enabled }}
+            - { containerPort: {{ .Values.metrics.port }}, name: metrics }
+            {{- end }}
           livenessProbe:
             httpGet: { path: /healthz, port: health }
             initialDelaySeconds: 15

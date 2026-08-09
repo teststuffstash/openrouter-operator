@@ -8,6 +8,7 @@ from __future__ import annotations
 import functools
 import os
 import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,9 +18,9 @@ import kopf
 
 from .adapter import OpenRouterAdapter
 from .k8s import delete_cr, delete_key_secret, write_key_secret
-from .metrics import KeyOpMetrics, MeteredPort
+from .metrics import KeyOpMetrics, MeteredPort, credit_poll_interval_s, poll_account_credit
 from .models import OpenRouterKeySpec
-from .ports import KeyState, OpenRouterPort, RateLimited
+from .ports import AccountPort, KeyState, OpenRouterPort, RateLimited
 from .reconcile import (
     Create,
     NoOp,
@@ -196,6 +197,37 @@ def start_metrics_exporter(**_: Any) -> None:
         (addr, int(os.environ.get("METRICS_PORT", "9090"))), _MetricsHandler
     )
     threading.Thread(target=server.serve_forever, name="metrics-exporter", daemon=True).start()
+    _start_account_credit_poller()
+
+
+def _start_account_credit_poller() -> None:
+    """Refresh the account balance gauge on a slow timer (issue #29).
+
+    Account credit is not a per-reconcile quantity — it changes with inference spend across the
+    whole fleet, not with anything this operator does — so it is polled on its own cadence
+    (METRICS_CREDIT_INTERVAL seconds, default 300, floored) instead of on the reconcile path,
+    where it would add a key-API round trip to every CR event. Same METRICS_ENABLED knob: this is
+    only reached when the exporter starts. Daemon thread, like the exporter.
+    """
+    interval_s = credit_poll_interval_s(os.environ.get("METRICS_CREDIT_INTERVAL"))
+
+    def loop() -> None:
+        while True:
+            _poll_account_credit_once()
+            time.sleep(interval_s)
+
+    threading.Thread(target=loop, name="account-credit-poller", daemon=True).start()
+
+
+def _poll_account_credit_once() -> None:
+    """One poll, client construction included: a missing or malformed credential has to surface as
+    a counted poll failure against a stale gauge, not as a thread that quietly stops existing."""
+    try:
+        port: AccountPort = OpenRouterAdapter(os.environ["OPENROUTER_MANAGEMENT_KEY"])
+    except Exception:
+        METRICS.account.record_poll_failure()
+        return
+    poll_account_credit(port, METRICS.account, _now)
 
 
 @kopf.timer(GROUP, VERSION, PLURAL, interval=900.0)

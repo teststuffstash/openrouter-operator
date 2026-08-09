@@ -59,6 +59,35 @@ class MintedKey:
     value: str
 
 
+@dataclass(frozen=True)
+class AccountCredits:
+    """The account-scope credit ledger from `GET /api/v1/credits` (issue #29).
+
+    Account-wide, not per-key: this is the pay-as-you-go pot every minted key spends out of, and
+    the second exhaustion of the #26 incident (the balance was at $0.17 and nothing watched it).
+    """
+
+    total_credits: float
+    total_usage: float
+
+    @property
+    def balance_usd(self) -> float:
+        """What is left to spend. Negative is possible (usage can pass the grant) and is NOT
+        clamped: a clamped 0 is exactly the reading the gauge must stay able to tell apart."""
+        return self.total_credits - self.total_usage
+
+
+class AccountPort(Protocol):
+    """Account-scope reads, deliberately a SEPARATE port from `OpenRouterPort`.
+
+    A credits read spends no `keys-modify` budget, so it is not something `MeteredPort` should
+    count, and keeping it off the key port means no existing key fake grows a method it has no
+    opinion about. One adapter implements both.
+    """
+
+    def get_account_credits(self) -> AccountCredits: ...
+
+
 class OpenRouterPort(Protocol):
     """The operations the operator needs from OpenRouter. The adapter implements this.
 

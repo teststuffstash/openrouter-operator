@@ -15,16 +15,24 @@ Metric surface (the chart's Service / ServiceMonitor / PrometheusRule land in #2
     openrouter_key_api_ops_total{op=...}                  counter, since process start
     openrouter_key_api_ops_today{op=...}                  gauge, current UTC day
     openrouter_key_api_rate_limited_total{limit_class=...} counter, daily-class vs other 429s
+
+Issue #29 adds the account-scope half of the same incident — the balance the keys spend out of
+(`GET /api/v1/credits`), polled on a slow timer rather than per reconcile:
+
+    openrouter_account_credit_usd                         gauge, total_credits - total_usage
+    openrouter_account_credit_updated_timestamp_seconds   gauge, last SUCCESSFUL poll (0 = never)
+    openrouter_account_credit_poll_failures_total         counter, polls that failed
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 
 from .models import ResetInterval
-from .ports import KeyState, MintedKey, OpenRouterPort, RateLimited
+from .ports import AccountCredits, AccountPort, KeyState, MintedKey, OpenRouterPort, RateLimited
 from .reconcile import ParkUntilReset, decide_retry
 
 # Every port operation gets a series, including the read: `get` does not spend the keys-modify
@@ -36,11 +44,24 @@ KEY_OPS: tuple[str, ...] = ("get", "create", "update", "delete")
 # `other` backs off normally. Both are rendered always so a rate() has a series from t0.
 LIMIT_CLASSES: tuple[str, ...] = ("daily", "other")
 
+# Bounds on the credits poll (issue #29). It is an account-scope number, so 5 minutes is plenty;
+# the floor exists so a mistyped chart value cannot turn a gauge into a key-API hammer.
+DEFAULT_CREDIT_POLL_INTERVAL_S = 300.0
+MIN_CREDIT_POLL_INTERVAL_S = 60.0
+
 
 class KeyOpMetrics:
-    """Counts key-API ops per UTC day (the rpd window) and per process lifetime."""
+    """Counts key-API ops per UTC day (the rpd window) and per process lifetime.
+
+    Also OWNS the account-credit state (`.account`) and renders it. That composition is
+    deliberate rather than tidy: `:9090/metrics` is one exposition surface, and
+    `test_chart_metrics.py::test_every_alert_has_a_series_behind_it` refuses any chart alert whose
+    metric is missing from `KeyOpMetrics().render()` — so a series that lives on some other
+    renderer is, to that guard, a series that does not exist.
+    """
 
     def __init__(self) -> None:
+        self.account = AccountCreditMetrics()
         self._total: dict[str, int] = dict.fromkeys(KEY_OPS, 0)
         self._today: dict[str, int] = dict.fromkeys(KEY_OPS, 0)
         self._rate_limited: dict[str, int] = dict.fromkeys(LIMIT_CLASSES, 0)
@@ -88,7 +109,7 @@ class KeyOpMetrics:
                 for cls in LIMIT_CLASSES
             ),
         ]
-        return "\n".join(lines) + "\n"
+        return "\n".join(lines) + "\n" + self.account.render()
 
     def _roll(self, now: datetime) -> None:
         """Reset the daily gauge when the UTC day turns. Called on READ as well as on write: a
@@ -98,6 +119,103 @@ class KeyOpMetrics:
         if day != self._day:
             self._day = day
             self._today = dict.fromkeys(KEY_OPS, 0)
+
+
+class AccountCreditMetrics:
+    """Last known OpenRouter account balance, and how much that reading can be trusted (#29).
+
+    Two failure modes shape this, and both are about NOT emitting a plausible lie:
+
+    * A failed poll must never render as `0`. An unreachable API and a drained account would then
+      look identical, and #33's low-water alert would page on a network blip while a real drain
+      hides behind the same number. So a failure holds the last good reading and moves only the
+      freshness signals — the balance changes when, and only when, OpenRouter says it did.
+    * Before the FIRST successful poll there is no last good reading at all. The sample is `NaN`,
+      the exposition format's explicit no-value: the series is present (which the chart guard
+      requires — see `KeyOpMetrics`), every comparison against it is false, so a threshold alert
+      can neither fire on it nor read it as $0.
+
+    Staleness is therefore what an operator alerts on for "the poller is broken", via
+    `time() - openrouter_account_credit_updated_timestamp_seconds`. That timestamp is 0 (not NaN)
+    when nothing has ever succeeded, so a never-polled operator reads as maximally stale and
+    trips that rule loudly, rather than disappearing from it.
+    """
+
+    def __init__(self) -> None:
+        self._balance_usd: float = math.nan
+        self._updated_at: datetime | None = None
+        self._poll_failures = 0
+
+    def record_credits(self, credits: AccountCredits, now: datetime) -> None:
+        self._balance_usd = credits.balance_usd
+        self._updated_at = now
+
+    def record_poll_failure(self) -> None:
+        """Count a failed poll. Takes no clock on purpose: nothing about a failure is allowed to
+        touch the balance or its freshness — a stale reading must keep looking exactly as stale
+        as it is."""
+        self._poll_failures += 1
+
+    def render(self) -> str:
+        """Prometheus text exposition. No labels and no time-dependent state — unlike the daily
+        op gauge, nothing here rolls over on a clock."""
+        updated = self._updated_at.timestamp() if self._updated_at is not None else 0.0
+        lines = [
+            "# HELP openrouter_account_credit_usd OpenRouter account credit remaining "
+            "(total_credits - total_usage) as of the last successful poll; NaN before the first.",
+            "# TYPE openrouter_account_credit_usd gauge",
+            f"openrouter_account_credit_usd {_fmt(self._balance_usd)}",
+            "# HELP openrouter_account_credit_updated_timestamp_seconds Unix time of the last "
+            "SUCCESSFUL credits poll; 0 when none has ever succeeded.",
+            "# TYPE openrouter_account_credit_updated_timestamp_seconds gauge",
+            f"openrouter_account_credit_updated_timestamp_seconds {_fmt(updated)}",
+            "# HELP openrouter_account_credit_poll_failures_total Credits polls that failed; the "
+            "balance above holds its last known value across these rather than reading 0.",
+            "# TYPE openrouter_account_credit_poll_failures_total counter",
+            f"openrouter_account_credit_poll_failures_total {self._poll_failures}",
+        ]
+        return "\n".join(lines) + "\n"
+
+
+def _fmt(value: float) -> str:
+    """Render a float for the exposition format: fixed-point, trailing zeros trimmed, and `NaN`
+    spelled the way Prometheus' parser expects. Six decimals is far below a cent."""
+    if math.isnan(value):
+        return "NaN"
+    return f"{value:.6f}".rstrip("0").rstrip(".")
+
+
+def poll_account_credit(
+    port: AccountPort, metrics: AccountCreditMetrics, clock: Callable[[], datetime]
+) -> None:
+    """One balance refresh: read the ledger through the port, record success or failure.
+
+    The broad `except` is the point of this function. It runs on a background timer thread, so
+    every failure — network, 429, a credential the endpoint rejects, an SDK shape change — has to
+    degrade to "the balance is stale" instead of killing the poller or zeroing the gauge. There is
+    no caller to re-raise to and nothing to decide: the only distinction that reaches a metric is
+    succeeded vs did not.
+    """
+    try:
+        credits = port.get_account_credits()
+    except Exception:
+        metrics.record_poll_failure()
+        return
+    metrics.record_credits(credits, clock())
+
+
+def credit_poll_interval_s(raw: str | None) -> float:
+    """Bound the configured poll interval (`METRICS_CREDIT_INTERVAL`).
+
+    Pure and tested because it runs at operator startup: an unparseable value must fall back to
+    the default, never take the process down with a ValueError before kopf has a single handler
+    running.
+    """
+    try:
+        interval = float(raw) if raw is not None and raw.strip() else DEFAULT_CREDIT_POLL_INTERVAL_S
+    except ValueError:
+        return DEFAULT_CREDIT_POLL_INTERVAL_S
+    return max(MIN_CREDIT_POLL_INTERVAL_S, interval)
 
 
 class MeteredPort:

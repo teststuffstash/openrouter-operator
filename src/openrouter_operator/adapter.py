@@ -7,6 +7,12 @@ incl. `.hash`). `create`/`update` take `limit_reset: OptionalNullable[...]` and 
 window / no expiry), which is exactly how an ephemeral session key is minted (hard one-shot cap).
 Guardrails are NOT attached at key creation — that's a separate OpenRouter guardrails assign step
 (not yet wired; the CRD's `guardrail` field is currently inert).
+
+Account credit (issue #29) also comes from this SDK — no raw HTTP and no proxy hop needed.
+Verified against 0.10.0, the version `uv.lock` pins and the image installs `--frozen`:
+`client.credits.get_credits()` exists, takes only optional keyword args, and returns
+`GetCreditsResponse.data` with `total_credits: float` / `total_usage: float` — the same two fields
+as the live `GET /api/v1/credits` 200 recorded on the issue.
 """
 
 from __future__ import annotations
@@ -16,7 +22,7 @@ from datetime import datetime
 from typing import Any
 
 from .models import ResetInterval
-from .ports import KeyState, MintedKey, RateLimited
+from .ports import AccountCredits, KeyState, MintedKey, RateLimited
 
 
 class OpenRouterAdapter:
@@ -28,6 +34,14 @@ class OpenRouterAdapter:
     @property
     def _keys(self) -> Any:
         return self._client.api_keys
+
+    def get_account_credits(self) -> AccountCredits:
+        """Account-scope ledger — the same call the fleet's dispatch pre-flight makes, but with
+        this operator's provisioning key (accepted: HTTP 200, live probe on issue #29)."""
+        data = _call(self._client.credits.get_credits).data
+        return AccountCredits(
+            total_credits=float(data.total_credits), total_usage=float(data.total_usage)
+        )
 
     def get_key(self, key_hash: str) -> KeyState | None:
         resp = _call(self._keys.get, hash=key_hash)

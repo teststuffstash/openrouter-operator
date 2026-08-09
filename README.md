@@ -60,9 +60,13 @@ uv sync --extra sdk
 OPENROUTER_MANAGEMENT_KEY=sk-or-... kopf run -m openrouter_operator.operator
 ```
 
-The operator exports key-API op counters on `:9090/metrics` (issue #26 — the daily `keys-modify`
-budget is a real capacity dimension). `METRICS_PORT` / `METRICS_ADDR` move it, `METRICS_ENABLED=false`
-turns it off; the chart-side Service + ServiceMonitor + alert rules land with issue #27.
+The operator exports key-API op counters and the account credit gauge on `:9090/metrics` (issues
+#26 / #29 — the daily `keys-modify` budget and the pay-as-you-go balance were both unmeasured
+capacity dimensions, and the fleet stalled on the two of them together). `METRICS_PORT` /
+`METRICS_ADDR` move the exporter, `METRICS_ENABLED=false` turns it off, and
+`METRICS_CREDIT_INTERVAL` (seconds; default 300, floored at 60) paces the balance poll.
+`openrouter_account_credit_usd` reads `NaN` until the first successful poll and holds its last
+known value across failures — it is never 0 unless the account really is empty.
 
 ## Deploy
 

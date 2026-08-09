@@ -1,0 +1,26 @@
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+# Scrape config for the metrics Service (issue #27). kube-prometheus-stack runs with
+# `serviceMonitorSelectorNilUsesHelmValues: false`, so a ServiceMonitor shipped in this chart's own
+# namespace is discovered cluster-wide with no platform-side change. Clusters that DO select on a
+# label (e.g. `release: kube-prometheus-stack`) add it via metrics.serviceMonitor.additionalLabels.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: openrouter-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: openrouter-operator
+    {{- with .Values.metrics.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels: { app: openrouter-operator, component: metrics }
+  namespaceSelector:
+    matchNames: [{{ .Release.Namespace }}]
+  endpoints:
+    - port: metrics # the Service port NAME, not the number
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+{{- end }}

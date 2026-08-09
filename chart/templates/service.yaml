@@ -1,0 +1,18 @@
+{{- if .Values.metrics.enabled }}
+# Headless-adjacent ClusterIP fronting the operator's /metrics exporter (issue #27). Separate from
+# the kopf health port: `health` is the kubelet's liveness probe, `metrics` is Prometheus's scrape
+# target, and only the latter wants a Service in front of it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: openrouter-operator-metrics
+  namespace: {{ .Release.Namespace }}
+  labels: { app: openrouter-operator, component: metrics }
+spec:
+  type: ClusterIP
+  selector: { app: openrouter-operator }
+  ports:
+    # targetPort by NAME so re-pointing .Values.metrics.port moves the container port and the
+    # Service together — a numeric targetPort would silently drift from the exporter.
+    - { name: metrics, port: {{ .Values.metrics.port }}, targetPort: metrics, protocol: TCP }
+{{- end }}

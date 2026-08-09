@@ -1,4 +1,4 @@
-r"""Tests for the metrics wiring in ``chart/`` — Service, ServiceMonitor, PrometheusRule (issue #27).
+r"""Tests for the metrics wiring in ``chart/`` — Service/ServiceMonitor/PrometheusRule (issue #27).
 
 Same approach as ``tests/test_chart_rbac.py`` (issue #18): assert against real ``helm template``
 output, never a ``{{ … }}``-stripping regex and never a live cluster.

@@ -43,6 +43,34 @@ to create the first provisioning key:
 | `managementSecret.externalSecret.storeRef` | `{name: "", kind: ClusterSecretStore}` | **required when `create:true`** — YOUR store |
 | `managementSecret.externalSecret.remoteRef.key` | `""` | name in your store (defaults to `managementSecret.key`) |
 | `resources` | 50m/128Mi → 500m/256Mi | container resources |
+| `metrics.enabled` | `true` | `/metrics` exporter + its Service, ServiceMonitor and PrometheusRule |
+| `metrics.port` | `9090` | exporter port — the container port, Service and `METRICS_PORT` all follow it |
+| `metrics.serviceMonitor.enabled` | `true` | set `false` without the prometheus-operator CRDs |
+| `metrics.serviceMonitor.interval` / `.scrapeTimeout` | `30s` / `10s` | scrape cadence |
+| `metrics.serviceMonitor.additionalLabels` | `{}` | e.g. `{release: kube-prometheus-stack}` when Prometheus selects on a label |
+| `metrics.prometheusRule.enabled` | `true` | ship the alert rules |
+| `metrics.prometheusRule.additionalLabels` | `{}` | as above, for `ruleSelector` |
+| `metrics.prometheusRule.keyOpsPerDay.ceiling` | `1000` | **placeholder** — your account's `keys-modify-api-rpd-v2` limit (see below) |
+| `metrics.prometheusRule.keyOpsPerDay.warnAtPercent` | `70` | alert at this fraction of the ceiling |
+| `metrics.prometheusRule.keyOpsPerDay.for` | `10m` | how long the threshold must hold |
+
+### Monitoring
+
+The operator exports key-API op counters (`openrouter_key_api_ops_today`, `…_ops_total`,
+`…_rate_limited_total`) on `:9090/metrics`. The chart ships the Service, ServiceMonitor and one
+alert — `OpenRouterKeyOpsDailyBudgetNearlyExhausted` — which warns when the *modify* ops (mint,
+budget patch, delete) issued in the current UTC day pass `warnAtPercent` of the daily ceiling. Past
+that ceiling every key operation is rejected until the next UTC midnight: new `OpenRouterKey`
+resources stall unminted and deleted ones wedge on their finalizers.
+
+**Set the ceiling for your account.** OpenRouter does not publish the `keys-modify-api-rpd-v2`
+limit and it varies per account, so `1000` is a placeholder. Read the real value from the
+`X-RateLimit-Limit` header on a 429 from the key API and set `keyOpsPerDay.ceiling` to it —
+otherwise the alert thresholds against the wrong number.
+
+Both objects are discovered automatically by a kube-prometheus-stack running with
+`ruleSelectorNilUsesHelmValues: false` / `serviceMonitorSelectorNilUsesHelmValues: false`; on a
+stack that selects by label, use the `additionalLabels` knobs.
 
 ### Supplying the key — two ways
 

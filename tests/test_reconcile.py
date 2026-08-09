@@ -189,8 +189,10 @@ def test_decide_ephemeral(
 
 
 def test_rotate_skipped_when_desired_expiry_already_past() -> None:
-    # live key, expiry drifted, but the DESIRED expiry is itself past → rotating would mint a
-    # born-dead key (same guard as the re-mint path); NoOp until a fresh CR arrives.
+    # live key, expiry drifted, but the DESIRED expiry is itself past → never rotate on that drift:
+    # a rotation honouring it would mint a born-dead key. Since #25 a past deadline is inside the
+    # renewal window, so the age decision answers this instead — and answers it the same way,
+    # because the live key (12:30) is nowhere near its own expiry at 11:00. NoOp either way.
     stale = Desired(name="x", limit=0.5, reset_interval=None, expires_at=_PAST)
     assert isinstance(decide(stale, _eph_state(expires_at=_FUTURE), NOW), NoOp)
 

@@ -6,7 +6,7 @@ The kopf handler turns a Plan into port calls; this module just decides *what* s
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 from .models import OpenRouterKeySpec, ResetInterval
@@ -99,6 +99,7 @@ def decide(desired: Desired, observed: KeyState | None, now: datetime) -> Plan:
     """Decide the action to reconcile `observed` toward `desired`.
 
     - no key yet, or the existing one is DEAD (expired/revoked) -> Create (mint / re-mint)
+    - inside the renewal window (issue #25)                      -> renew on age, or leave alone
     - expiry drifted (PATCH can't fix that — issue #6)           -> Rotate (mint+swap+delete)
     - budget/reset drifted                                       -> Update
     - already correct                                            -> NoOp
@@ -113,16 +114,69 @@ def decide(desired: Desired, observed: KeyState | None, now: datetime) -> Plan:
             return Create(desired)
         return NoOp()
 
+    if _in_renewal_window(desired, now):
+        return _renewal_plan(desired, observed, now)
+
     if _expiry_drifted(desired, observed):
-        if desired.expires_at is not None and desired.expires_at > now:
-            return Rotate(observed.hash, desired)
-        return NoOp()  # the desired expiry is itself past — rotating would mint a born-dead key
+        # No born-dead guard needed here any more: drift is only ever reported for a spec that
+        # WANTS an expiry, and the renewal window above already returned for every such spec whose
+        # deadline is within RENEW_THRESHOLD_S — let alone past. So this rotation is always live.
+        return Rotate(observed.hash, desired)
 
     drifted = observed.limit != desired.limit or observed.reset_interval != desired.reset_interval
     if drifted:
         return Update(observed.hash, desired)
 
     return NoOp()
+
+
+def _in_renewal_window(desired: Desired, now: datetime) -> bool:
+    """Has the clock reached the point where THIS operator owns the key's lifetime (issue #25)?
+
+    True from `RENEW_THRESHOLD_S` before the spec's deadline onward — and it stays true once that
+    deadline passes, because a renewed key deliberately outlives it. Inside the window the spec's
+    `expiresAt` no longer describes the live key, so it is neither a drift reference (comparing
+    against it would rotate-loop the fresh window we just minted) nor a cap reference (an Update
+    would PATCH the carried remainder back up to the full `budgetUSD`). Only the age decision runs.
+
+    A standing project key has no deadline and is never in the window: it is the funding ceiling,
+    not a session breaker, so nothing about it is age-triggered.
+    """
+    if desired.expires_at is None:
+        return False
+    return (desired.expires_at - now).total_seconds() <= RENEW_THRESHOLD_S
+
+
+def _renewal_plan(desired: Desired, observed: KeyState, now: datetime) -> Plan:
+    """Rotate a live session key before it dies of AGE — or deliberately do nothing (issue #25).
+
+    A ride that outlasts its key's honest window 401-storms to death (sleep-tracking#96), so once
+    the live key is within `RENEW_THRESHOLD_S` of ITS OWN expiry, mint a replacement and swap the
+    Secret; the credential rail resolves the new value per request, so a running ride picks it up
+    without a restart. The fresh `RENEW_WINDOW` is what clears the trigger — re-minting the same
+    instant would fire again on every pass.
+
+    The cap is what makes this a fix rather than a breaker regression: the replacement carries the
+    tighter of the live and desired caps MINUS what has already been spent, so spend accumulates
+    down the whole rotation chain and total spend across old+new keys never exceeds the one
+    `budgetUSD` the CR asked for. Both edges of that are fail-safe, and both mean "do nothing":
+
+    * spend the read did not report — never mint a fresh cap on unknown spend; the key then dies
+      of age exactly as it does today, which is strictly better than silently refunding a session;
+    * nothing left to carry — an exhausted key 403s BY DESIGN (`_is_dead` leaves it alone for the
+      same reason), and age renewal must not resurrect it.
+    """
+    if observed.expires_at is None:
+        return NoOp()  # a key with no deadline of its own cannot die of age
+    if (observed.expires_at - now).total_seconds() > RENEW_THRESHOLD_S:
+        return NoOp()  # still comfortably live — the trigger is age, not every pass
+    if observed.usage is None:
+        return NoOp()
+    remaining = min(observed.limit, desired.limit) - observed.usage
+    if remaining <= 0:
+        return NoOp()
+    renewed = replace(desired, limit=remaining, expires_at=now + RENEW_WINDOW)
+    return Rotate(observed.hash, renewed, delete_old=False)
 
 
 def _expiry_drifted(desired: Desired, observed: KeyState) -> bool:

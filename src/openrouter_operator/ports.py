@@ -41,6 +41,11 @@ class KeyState:
     `expires_at` / `disabled` let the reconciler tell a LIVE key from a dead one: OpenRouter still
     returns an expired/revoked key's record (so a stale `status.hash` looks "minted"), but using it
     yields `401 User not found`. decide() re-mints a dead key instead of NoOp'ing on the corpse.
+
+    `usage` is the dollars this key has already spent, and `None` means the read did not report it
+    (absent field / shape change) — NOT zero. Proactive age renewal (issue #25) carries the
+    remaining budget onto the fresh key, so an unknown spend must stay distinguishable from no
+    spend: renewing on a `0.0` we invented would hand back a cap the session had already eaten.
     """
 
     hash: str
@@ -49,6 +54,7 @@ class KeyState:
     reset_interval: ResetInterval | None
     expires_at: datetime | None = None
     disabled: bool = False
+    usage: float | None = None
 
 
 @dataclass(frozen=True)

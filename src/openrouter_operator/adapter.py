@@ -143,7 +143,20 @@ def _to_state(data: Any) -> KeyState:
         reset_interval=ResetInterval(reset_raw) if reset_raw else None,
         expires_at=_parse_dt(getattr(data, "expires_at", None)),
         disabled=bool(getattr(data, "disabled", False)),
+        usage=_opt_float(getattr(data, "usage", None)),
     )
+
+
+def _opt_float(value: Any) -> float | None:
+    """Spend as a float, or None when the record did not report it (issue #25). Deliberately NOT
+    defaulted to 0.0: a renewal that reads "no spend" mints the full cap again, so an absent or
+    unparseable `usage` must stay unknown and make the renewal skip the pass instead."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_dt(value: Any) -> datetime | None:

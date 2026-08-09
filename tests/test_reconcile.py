@@ -17,6 +17,7 @@ from openrouter_operator.models import OpenRouterKeySpec, ResetInterval
 from openrouter_operator.ports import KeyState, MintedKey, OpenRouterPort, RateLimited
 from openrouter_operator.reconcile import (
     MIN_PARK_S,
+    RENEW_WINDOW,
     Backoff,
     Create,
     Desired,
@@ -117,9 +118,11 @@ def _eph_state(
     limit: float = 0.5,
     expires_at: datetime | None = None,
     disabled: bool = False,
+    usage: float | None = None,
 ) -> KeyState:
     """Observed session key: minted with no reset window -> reset_interval is None (must NOT
-    read back as weekly, or decide() update-loops it forever)."""
+    read back as weekly, or decide() update-loops it forever). `usage` defaults to None = the
+    read did not report spend, which is what makes an age renewal skip rather than guess (#25)."""
     return KeyState(
         hash="GKsess",
         name="sleep-tracking-session-issue-42-round-1",
@@ -127,6 +130,7 @@ def _eph_state(
         reset_interval=None,
         expires_at=expires_at,
         disabled=disabled,
+        usage=usage,
     )
 
 
@@ -214,6 +218,192 @@ def test_ephemeral_desired_and_helpers() -> None:
 def test_ephemeral_requires_session() -> None:
     with pytest.raises(ValueError):
         OpenRouterKeySpec.model_validate({"project": "demo", "budgetUSD": 0.5, "ephemeral": True})
+
+
+# ── Proactive rotation before a key dies of AGE (issue #25) ─────────────────────────────────────
+# Rotation used to be drift-triggered ONLY: decide() compared the spec's expiry against the live
+# key's, so nothing ever watched a key's own clock. A ride on a key with a perfectly honest window
+# simply outlasted it (sleep-tracking#96: laguna:free at ~306s/turn hit the 2h mint TTL), the worker
+# 401-stormed and the egress proxy opened its auth circuit for 900s. Whole ride lost.
+#
+# The fix: once the clock is within RENEW_THRESHOLD_S of the spec's deadline, THIS operator owns the
+# key's lifetime — it re-mints before the live key dies (Rotate: mint + Secret swap, which the
+# proxy's per-request `ref:` resolution picks up within its 60s cache, no pod restart) and stops
+# measuring the key against a deadline it has deliberately moved past.
+#
+# Three things this table pins, because each is a way the fix could become a regression:
+#   * the renewal carries the REMAINING budget (live cap − spend), never a fresh `budgetUSD` — a
+#     rotation that resets spend is a breaker regression, not a fix (the `_is_dead` reasoning);
+#   * spend it cannot read, or spend that already ate the cap, means NO renewal (fail-safe both
+#     ways: the key then dies of age exactly as it does today, rather than being resurrected);
+#   * a renewed key must not re-trigger anything — not the age check (it mints a fresh window) and
+#     not the drift check (its expiry now legitimately outlives the spec's), or reconcile hot-loops.
+# The old key is deliberately NOT deleted on this path: it is seconds-to-minutes from lapsing on its
+# own, and deleting it early would 401 any proxy instance still holding a ≤60s-stale cached ref.
+
+_RENEW_NOW = datetime(2026, 6, 29, 11, 45, tzinfo=UTC)  # 15 min before the spec deadline (12:00)
+_RENEWED_EXP = _RENEW_NOW + RENEW_WINDOW  # the window a renewal at _RENEW_NOW mints
+
+
+@pytest.mark.parametrize(
+    ("description", "desired", "observed", "now", "expected", "expected_limit", "deletes_old"),
+    [
+        (
+            "live session key 15 min from its expiry, $0.20 spent -> renew on the remainder",
+            EPHEMERAL_DESIRED,
+            _eph_state(expires_at=_DESIRED_EXP_STORED, usage=0.2),
+            _RENEW_NOW,
+            Rotate,
+            0.3,
+            False,
+        ),
+        (
+            "renewal carries the LIVE key's cap, not the spec's -> a 2nd renewal chains down",
+            EPHEMERAL_DESIRED,
+            _eph_state(limit=0.3, expires_at=_RENEWED_EXP, usage=0.1),
+            _RENEWED_EXP - timedelta(minutes=10),
+            Rotate,
+            0.2,
+            False,
+        ),
+        (
+            "spend unknown (the read did not report usage) -> skip the pass, never guess $0",
+            EPHEMERAL_DESIRED,
+            _eph_state(expires_at=_DESIRED_EXP_STORED, usage=None),
+            _RENEW_NOW,
+            NoOp,
+            None,
+            False,
+        ),
+        (
+            "cap already spent -> no renewal (an exhausted key 403s by design)",
+            EPHEMERAL_DESIRED,
+            _eph_state(expires_at=_DESIRED_EXP_STORED, usage=0.5),
+            _RENEW_NOW,
+            NoOp,
+            None,
+            False,
+        ),
+        (
+            "spend past the cap -> still no renewal",
+            EPHEMERAL_DESIRED,
+            _eph_state(expires_at=_DESIRED_EXP_STORED, usage=0.6),
+            _RENEW_NOW,
+            NoOp,
+            None,
+            False,
+        ),
+        (
+            "live key nowhere near its expiry -> untouched (the trigger is age, not every pass)",
+            EPHEMERAL_DESIRED,
+            _eph_state(expires_at=_DESIRED_EXP_STORED, usage=0.2),
+            NOW,  # 11:00 — a full hour of window left
+            NoOp,
+            None,
+            False,
+        ),
+        (
+            "just renewed, spec deadline still ahead -> noop (the fresh window cleared the "
+            "trigger; re-rotating on 'drift' against the spec's deadline would hot-loop)",
+            EPHEMERAL_DESIRED,
+            _eph_state(limit=0.3, expires_at=_RENEWED_EXP, usage=0.2),
+            datetime(2026, 6, 29, 11, 50, tzinfo=UTC),
+            NoOp,
+            None,
+            False,
+        ),
+        (
+            "renewed key running past the spec deadline -> noop, it is the live key that matters",
+            EPHEMERAL_DESIRED,
+            _eph_state(limit=0.3, expires_at=_RENEWED_EXP, usage=0.2),
+            datetime(2026, 6, 29, 12, 30, tzinfo=UTC),  # spec said 12:00; the ride is still up
+            NoOp,
+            None,
+            False,
+        ),
+        (
+            "live key carries no expiry at all -> nothing to renew (it cannot die of age)",
+            EPHEMERAL_DESIRED,
+            _eph_state(expires_at=None, usage=0.2),
+            _RENEW_NOW,
+            NoOp,
+            None,
+            False,
+        ),
+        (
+            "standing project key -> never age-renewed (no deadline; it is the funding ceiling)",
+            DESIRED,
+            _state(),
+            _RENEW_NOW,
+            NoOp,
+            None,
+            False,
+        ),
+        (
+            "expiry DRIFT is unchanged: full spec cap, and the old key still gets deleted (#6)",
+            EPHEMERAL_DESIRED,
+            _eph_state(expires_at=_FUTURE, usage=0.2),
+            NOW,
+            Rotate,
+            0.5,
+            True,
+        ),
+    ],
+)
+def test_decide_renews_before_age_death(
+    description: str,
+    desired: Desired,
+    observed: KeyState,
+    now: datetime,
+    expected: type[Plan],
+    expected_limit: float | None,
+    deletes_old: bool,
+) -> None:
+    plan = decide(desired, observed, now)
+    assert isinstance(plan, expected), description
+    if isinstance(plan, Rotate):
+        assert plan.key_hash == observed.hash, description
+        assert plan.desired.limit == pytest.approx(expected_limit), description
+        assert plan.delete_old is deletes_old, description
+        if plan.delete_old:  # drift rotation: the spec's own deadline, honoured as written
+            assert plan.desired.expires_at == desired.expires_at, description
+        else:  # age renewal: a FRESH window, or the fix would re-trigger itself every pass
+            assert plan.desired.expires_at == now + RENEW_WINDOW, description
+
+
+def test_renewal_chain_caps_total_spend_across_rotations() -> None:
+    """The acceptance criterion of #25, as an invariant over a whole chain: a ride that outlives
+    its key's original window always has a live credential, and total spend across old+new keys
+    never exceeds the ONE `budgetUSD` the CR asked for. Each renewal hands on what is left, so the
+    chain converges on an exhausted cap — it does not renew its way to unlimited spend.
+    """
+    budget = EPHEMERAL_DESIRED.limit  # 0.5
+    burn_per_key = 0.1
+    spent = 0.0
+    limit, expires = budget, _DESIRED_EXP_STORED
+
+    for _ in range(4):
+        now = expires - timedelta(minutes=10)  # the ride is still running; the key is nearly dead
+        plan = decide(
+            EPHEMERAL_DESIRED,
+            _eph_state(limit=limit, expires_at=expires, usage=burn_per_key),
+            now,
+        )
+        assert isinstance(plan, Rotate) and plan.delete_old is False
+        renewed = plan.desired
+        assert renewed.expires_at is not None  # never a window without a live credential
+        assert renewed.expires_at > now
+        spent += burn_per_key
+        limit, expires = renewed.limit, renewed.expires_at
+        assert spent + limit == pytest.approx(budget)  # ...and never more cap than was funded
+
+    # The last of the budget burns: no renewal at all, the session ends on an exhausted key.
+    last = decide(
+        EPHEMERAL_DESIRED,
+        _eph_state(limit=limit, expires_at=expires, usage=limit),
+        expires - timedelta(minutes=10),
+    )
+    assert isinstance(last, NoOp)
 
 
 # ── GC of expired ephemeral keys (issue #10) ────────────────────────────────────────────────────

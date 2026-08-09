@@ -47,10 +47,15 @@ class Rotate:
     its original deadline — and a healthy agent run died at that stale deadline mid-run. Expiry
     drift therefore rotates. Order matters in the executor: mint + Secret swap BEFORE deleting the
     old key, so a consumer never observes a window with no live credential.
+
+    `delete_old` is False for a proactive AGE renewal (issue #25): that rotation fires precisely
+    because the old key is minutes from lapsing on its own, and deleting it early would 401 any
+    consumer still resolving a ≤60s-stale cached reference to it. Drift rotation keeps deleting.
     """
 
     key_hash: str
     desired: Desired
+    delete_old: bool = True
 
 
 @dataclass(frozen=True)
@@ -64,6 +69,19 @@ Plan = Create | Update | Rotate | NoOp
 # back 18:40:08) — strict equality would rotate every reconcile, forever. Anything inside this
 # window is "the same instant"; real drift (a re-mint extending a session) is minutes-to-hours.
 EXPIRY_TOLERANCE_S = 120.0
+
+# ── Proactive age renewal of a session key (issue #25) ──────────────────────────────────────────
+# How close to a live key's own expiry the operator re-mints. Two floors set it: it must be at
+# least 2x the reconcile timer (900s) so a pass cannot be missed and land on a dead key, and it
+# must be comfortably longer than the credential rail's cached-ref TTL (60s) so the swapped Secret
+# has resolved everywhere before the old key lapses.
+RENEW_THRESHOLD_S = 1800.0
+
+# The window a renewal mints. Much longer than RENEW_THRESHOLD_S, so a renewal clears its own
+# trigger for hours rather than re-firing on the next pass; short enough that a key still
+# self-destructs promptly if the operator dies — and well inside GC_GRACE, so the expiry sweep
+# still collects the CR and its Secret on the spec's own schedule.
+RENEW_WINDOW = timedelta(hours=2)
 
 
 def desired_from_spec(spec: OpenRouterKeySpec) -> Desired:

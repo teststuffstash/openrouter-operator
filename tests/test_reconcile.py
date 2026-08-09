@@ -14,9 +14,11 @@ import pytest
 from openrouter_operator.adapter import OpenRouterAdapter, _to_state
 from openrouter_operator.metrics import KeyOpMetrics, MeteredPort
 from openrouter_operator.models import OpenRouterKeySpec, ResetInterval
+from openrouter_operator.operator import RENEW_TIMER_INTERVAL_S
 from openrouter_operator.ports import KeyState, MintedKey, OpenRouterPort, RateLimited
 from openrouter_operator.reconcile import (
     MIN_PARK_S,
+    RENEW_THRESHOLD_S,
     RENEW_WINDOW,
     Backoff,
     Create,
@@ -406,6 +408,16 @@ def test_renewal_chain_caps_total_spend_across_rotations() -> None:
         expires - timedelta(minutes=10),
     )
     assert isinstance(last, NoOp)
+
+
+def test_renewal_timer_fires_at_least_twice_inside_the_window() -> None:
+    """The renewal decision can only act on a pass that actually happens, and nothing generates an
+    event when a key ages — so the timer's cadence is load-bearing (issue #25). If its interval
+    ever grew past the threshold, a key would sail through the whole window untouched and die of
+    age again: the bug reintroduced by a number rather than by logic. The timer itself is I/O glue,
+    but the relationship between the two constants is exactly the kind of thing a table can pin.
+    """
+    assert 0 < RENEW_TIMER_INTERVAL_S * 2 <= RENEW_THRESHOLD_S
 
 
 # ── GC of expired ephemeral keys (issue #10) ────────────────────────────────────────────────────

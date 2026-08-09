@@ -68,7 +68,19 @@ class OpenRouterAdapter:
         _call(self._keys.update, hash=key_hash, limit=limit, limit_reset=_reset_value(reset))
 
     def delete_key(self, key_hash: str) -> None:
-        _call(self._keys.delete, hash=key_hash)
+        """Delete the runtime key. Idempotent: a key already absent upstream is SUCCESS (#30).
+
+        The desired state — no such key on OpenRouter — already holds, so a not-found must not
+        propagate: kopf retried it forever and the CR's finalizer never cleared (11 wedged CRs at
+        filing, on keys deleted mid-storm or self-destructed at expiry). Scoped to DELETE on
+        purpose — a 404 on get/update means the key vanished under us mid-reconcile, and that has
+        to keep surfacing.
+        """
+        try:
+            _call(self._keys.delete, hash=key_hash)
+        except Exception as exc:
+            if not _is_not_found(exc):
+                raise
 
 
 def _call(op: Callable[..., Any], **kwargs: Any) -> Any:
@@ -86,6 +98,21 @@ def _call(op: Callable[..., Any], **kwargs: Any) -> Any:
         if status != 429:
             raise
         raise RateLimited(_limit_name(exc)) from exc
+
+
+def _is_not_found(exc: BaseException) -> bool:
+    """Does this SDK error mean "no such key upstream"? (issue #30)
+
+    Duck-typed for the same reason `_call` is — the beta SDK's error classes move. The incident
+    error (`openrouter.errors.notfoundresponse_error.NotFoundResponseError: API key not found`)
+    reached the log with no HTTP status attached, so match the class NAME as well as the status:
+    either signal alone is enough, and a rename to some other `*NotFound*` still reads as absent.
+    Anything unrecognised stays an exception (normal kopf backoff), never a silent success.
+    """
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if status == 404:
+        return True
+    return "notfound" in type(exc).__name__.lower()
 
 
 def _limit_name(exc: Exception) -> str:

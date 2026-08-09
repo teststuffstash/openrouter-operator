@@ -107,4 +107,8 @@ class OpenRouterPort(Protocol):
 
     def update_key(self, key_hash: str, limit: float, reset: ResetInterval | None) -> None: ...
 
-    def delete_key(self, key_hash: str) -> None: ...
+    def delete_key(self, key_hash: str) -> None:
+        """Ensure the key is gone. Succeeds when it is ALREADY absent upstream (issue #30) —
+        the post-condition is "no such key", not "this call did the deleting", so a caller can
+        clear a finalizer on return. Other failures still raise."""
+        ...

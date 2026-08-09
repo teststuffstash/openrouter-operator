@@ -7,6 +7,12 @@ budget. The table pins the part that is easy to get wrong: the counting window i
 day — the same window the rpd limit resets on — so a scrape must never report yesterday's ops as
 today's, and the rollover has to happen on READ as well as on write (a quiet operator still scrapes
 every 30s, and a gauge stuck at yesterday's total would fire the threshold alert forever).
+
+The account-balance gauge (issue #29) is the second half of the same incident — the fleet stalled on
+the daily key-op limit AND on a $0.17 pay-as-you-go balance, and nothing measured either. Its table
+pins a different failure: the balance is polled on a slow timer, so the poll can fail, and it can
+fail before it has ever succeeded. A failed poll must never be indistinguishable from a drained
+account — that difference is precisely what the low-water alert (#33) fires on.
 """
 
 from __future__ import annotations
@@ -16,9 +22,22 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from openrouter_operator.metrics import KEY_OPS, KeyOpMetrics, MeteredPort
+from openrouter_operator.metrics import (
+    KEY_OPS,
+    KeyOpMetrics,
+    MeteredPort,
+    credit_poll_interval_s,
+    poll_account_credit,
+)
 from openrouter_operator.models import ResetInterval
-from openrouter_operator.ports import KeyState, MintedKey, OpenRouterPort, RateLimited
+from openrouter_operator.ports import (
+    AccountCredits,
+    AccountPort,
+    KeyState,
+    MintedKey,
+    OpenRouterPort,
+    RateLimited,
+)
 
 _D29_MORNING = datetime(2026, 6, 29, 9, 0, tzinfo=UTC)
 _D29_EVENING = datetime(2026, 6, 29, 19, 40, tzinfo=UTC)
@@ -208,3 +227,148 @@ def test_metered_port_returns_the_inner_result() -> None:
     assert port.create_key("demo", 1.0, ResetInterval.weekly).hash == "GKnew"
     state = port.get_key("GK1")
     assert state is not None and state.hash == "GK1"
+
+
+# --- account balance gauge (issue #29) -------------------------------------------------------
+
+# The figures the live probe on the issue returned for this operator's own provisioning key
+# (`GET /api/v1/credits` -> 200, 2026-08-08): $50 granted, $29.83 spent, $20.17 left.
+_LIVE = AccountCredits(total_credits=50.0, total_usage=29.832844979)
+_TOPPED_UP = AccountCredits(total_credits=70.0, total_usage=29.832844979)
+_DRAINED = AccountCredits(total_credits=50.0, total_usage=50.0)
+_OVERSPENT = AccountCredits(total_credits=50.0, total_usage=51.25)
+
+# Polls are five minutes apart — the Nth poll happens at _POLL_TIMES[N] whether it succeeds or not.
+_POLL_TIMES = [datetime(2026, 6, 29, 9, 0, tzinfo=UTC) + timedelta(minutes=5 * i) for i in range(4)]
+_TS_POLL_0 = "1782723600"  # unix seconds of _POLL_TIMES[0]
+_TS_POLL_2 = "1782724200"  # ... and of _POLL_TIMES[2]
+
+
+class _ScriptedCreditPort:
+    """Account port replaying scripted poll outcomes; a `None` outcome means the call blew up."""
+
+    def __init__(self, outcomes: Sequence[AccountCredits | None]) -> None:
+        self._outcomes = list(outcomes)
+
+    def get_account_credits(self) -> AccountCredits:
+        outcome = self._outcomes.pop(0)
+        if outcome is None:
+            raise RuntimeError("credits endpoint unreachable")
+        return outcome
+
+
+def _clock_at(index: int) -> Callable[[], datetime]:
+    return lambda: _POLL_TIMES[index]
+
+
+def _drive_polls(outcomes: Sequence[AccountCredits | None]) -> str:
+    """Run the scripted polls through the real collector and render the exposition text."""
+    metrics = KeyOpMetrics()
+    port: AccountPort = _ScriptedCreditPort(outcomes)
+    for index in range(len(outcomes)):
+        poll_account_credit(port, metrics.account, _clock_at(index))
+    return metrics.render(_D29_EVENING)
+
+
+@pytest.mark.parametrize(
+    ("description", "outcomes", "expected_lines"),
+    [
+        (
+            "never polled -> the series exists but carries no value; NaN, never 0",
+            (),
+            (
+                "openrouter_account_credit_usd NaN",
+                "openrouter_account_credit_updated_timestamp_seconds 0",
+                "openrouter_account_credit_poll_failures_total 0",
+            ),
+        ),
+        (
+            "one good poll -> balance is total_credits minus total_usage",
+            (_LIVE,),
+            (
+                "openrouter_account_credit_usd 20.167155",
+                f"openrouter_account_credit_updated_timestamp_seconds {_TS_POLL_0}",
+                "openrouter_account_credit_poll_failures_total 0",
+            ),
+        ),
+        (
+            "the poll fails before it ever succeeded -> still valueless, NOT a $0 balance",
+            (None,),
+            (
+                "openrouter_account_credit_usd NaN",
+                "openrouter_account_credit_updated_timestamp_seconds 0",
+                "openrouter_account_credit_poll_failures_total 1",
+            ),
+        ),
+        (
+            "a failure after a good reading -> last known balance held, freshness pinned to it",
+            (_LIVE, None),
+            (
+                "openrouter_account_credit_usd 20.167155",
+                f"openrouter_account_credit_updated_timestamp_seconds {_TS_POLL_0}",
+                "openrouter_account_credit_poll_failures_total 1",
+            ),
+        ),
+        (
+            "a later success supersedes the held value and moves freshness forward",
+            (_LIVE, None, _TOPPED_UP),
+            (
+                "openrouter_account_credit_usd 40.167155",
+                f"openrouter_account_credit_updated_timestamp_seconds {_TS_POLL_2}",
+                "openrouter_account_credit_poll_failures_total 1",
+            ),
+        ),
+        (
+            "a genuinely drained account -> a real 0, which is why an absent reading cannot be 0",
+            (_DRAINED,),
+            (
+                "openrouter_account_credit_usd 0",
+                f"openrouter_account_credit_updated_timestamp_seconds {_TS_POLL_0}",
+                "openrouter_account_credit_poll_failures_total 0",
+            ),
+        ),
+        (
+            "usage past the grant -> negative, not clamped (the account owes)",
+            (_OVERSPENT,),
+            (
+                "openrouter_account_credit_usd -1.25",
+                f"openrouter_account_credit_updated_timestamp_seconds {_TS_POLL_0}",
+                "openrouter_account_credit_poll_failures_total 0",
+            ),
+        ),
+    ],
+)
+def test_account_credit_gauge(
+    description: str,
+    outcomes: Sequence[AccountCredits | None],
+    expected_lines: Sequence[str],
+) -> None:
+    text = _drive_polls(outcomes)
+    for line in expected_lines:
+        assert f"\n{line}\n" in f"\n{text}", f"{description}: missing {line!r} in\n{text}"
+
+
+def test_a_fresh_instance_exposes_the_balance_series_for_the_chart_guard() -> None:
+    """Mirrors ``tests/test_chart_metrics.py::test_every_alert_has_a_series_behind_it``, which
+    renders a fresh, never-polled ``KeyOpMetrics`` and rejects any alert naming a metric that
+    surface lacks. #33's low-water alert is written against this exact name, so the contract is
+    asserted from this side too: the series is on the one renderer the guard reads, present from
+    t0, and valueless (NaN) rather than 0 until a poll succeeds.
+    """
+    exposed = KeyOpMetrics().render(_D29_EVENING)
+    assert "# TYPE openrouter_account_credit_usd gauge" in exposed
+    assert "\nopenrouter_account_credit_usd NaN\n" in exposed
+    assert exposed.endswith("\n")  # Prometheus text format requires the trailing newline
+
+
+@pytest.mark.parametrize(
+    ("description", "raw", "expected"),
+    [
+        ("unset -> 5 minutes; it is an account-scope number, not a per-reconcile one", None, 300.0),
+        ("the chart can slow it down", "900", 900.0),
+        ("below the floor -> floored, so a typo cannot hammer the key API", "5", 60.0),
+        ("unparseable -> the default; a bad value must not crash operator startup", "5m", 300.0),
+    ],
+)
+def test_credit_poll_interval(description: str, raw: str | None, expected: float) -> None:
+    assert credit_poll_interval_s(raw) == expected, description

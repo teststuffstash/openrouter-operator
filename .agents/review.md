@@ -21,7 +21,12 @@ if all hold — otherwise `--request-changes` with specific comments:
    surface here, not at reconcile-time in prod) — no new `# type: ignore` / `Any` widening without reason.
 4. **No duplicate tests / no blobs.** New cases are rows/params in the table, not copy-pasted functions; no
    committed binary fixtures.
-5. **Scope.** Minimal diff; touches no forbidden path (`chart/`, `deploy/`, `.github/`, secrets).
+5. **Scope — keyed on the PR's lane** (the branch prefix names the recipe class):
+   - `fix/…` (bug fixes, `.agents/fix.yaml`): touches `src/` + `tests/` only — `chart/` is forbidden.
+   - `build/…` (chart deliverables, `.agents/build.yaml`, since #27): touches `chart/` + `tests/`
+     only — `src/` is forbidden, and any PrometheusRule alert must be severity `warning` (never
+     `info`), symptom-described, with no alert shipped whose metric has no series behind it.
+   - Both: minimal diff; `deploy/`, `.github/`, `.agents/`, secrets are forbidden for every lane.
 
 CI (`devbox run ci` = ruff + mypy --strict + pytest, `fail_under`) runs separately — don't re-litigate what
 a status check covers; review what it can't.

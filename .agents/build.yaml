@@ -1,0 +1,87 @@
+# Goose recipe — the openrouter-operator chart/deliverable builder (FU-114 L3 class `build`).
+#
+#   goose run --recipe .agents/build.yaml --params issue=<n>
+#
+# The `fix.yaml` sibling owns src/+tests/ bug fixes; THIS recipe owns chart-side deliverables
+# (Service, ServiceMonitor, PrometheusRule, values) — the lane gap that parked issue #27: fix.yaml
+# forbids `chart/` for every bug ride, and that boundary is right, so build-class work gets its own
+# recipe instead of a widened one (the coordinator's option-1 analysis on #27, 2026-08-09).
+# Same sandbox contract as fix.yaml: ephemeral pod, branch+PR-only token, no live creds, master
+# unreachable.
+version: "1.0.0"
+title: "openrouter-operator chart builder"
+description: "Turn a chart-scoped issue into a helm-template-verified build/ branch + PR."
+
+instructions: |
+  You are the openrouter-operator project's chart agent. Build ONLY the deliverables in the given
+  GitHub issue, render-verified, as a tight reviewable diff. The chart is `chart/` and its tests
+  assert against REAL `helm template` output (`tests/test_chart_rbac.py` is the precedent since
+  PR#22) — never against a live cluster.
+
+  FIRST, read the issue — do not skip. Run `gh issue view {{ issue }} --comments` and treat the body
+  + any coordinator/meta ⚖ comments as the source of truth (deliverables, alert severity rules,
+  what is explicitly deferred). If `gh issue view` fails, STOP and report it; never guess.
+
+  Render-first TDD:
+  1. Add/extend a parametrized test in `tests/` that runs `helm template` on `chart/` and asserts
+     the manifests the issue asks for (one table of expectations, not N near-duplicate tests).
+     Prove it RED, commit the failing case, PUSH the branch immediately.
+  2. Make the MINIMAL chart change to go green. `devbox run ci` must stay green end-to-end.
+  3. `devbox run scan-secrets` clean. Then open the PR.
+
+  Hard rules:
+  - Touch `chart/` + `tests/` only (docs if the deliverable needs it). Do NOT edit: `src/`,
+    `deploy/`, `.github/`, `.agents/`, or anything secret. If a deliverable needs a src-side
+    metric that does not exist yet, STOP on that deliverable and say so in the PR body — a rule
+    with no series behind it must not ship (the #26→#27 coupling note).
+  - PrometheusRule alerts: severity `warning` (never `info` — the cluster's InfoInhibitor
+    silently suppresses info), symptom-shaped descriptions, and whatever `triage:` label the
+    issue's ⚖ comments specify.
+  - Branch `build/issue-{{ issue }}-<slug>` and PUSH EARLY, after every green step. NEVER push
+    to master.
+  - If a deliverable is NOT buildable as specified, STOP and report why with the rendered
+    evidence — do not fabricate or silently narrow it.
+  - The PR body must link the issue (`Fixes #{{ issue }}`) and show the red→green render case.
+
+prompt: |
+  Build the chart deliverables in GitHub issue #{{ issue }} for this repo, following the
+  instructions exactly. Use the `developer` tools (read/edit files; run `devbox run ci`, `git`,
+  `gh`). When done, report: the deliverables shipped (and any correctly withheld, with why), the
+  render test cases added, the final `devbox run ci` result, the branch name, and the PR URL.
+
+parameters:
+  - key: issue
+    input_type: string
+    requirement: required
+    description: "GitHub issue number (carries the chart deliverables + their ⚖ constraints)."
+
+extensions:
+  - type: builtin
+    name: developer
+    timeout: 900
+    bundled: true
+
+retry:
+  max_retries: 3
+  checks:
+    - type: shell
+      command: "devbox run ci"
+  on_failure: "devbox run ci 2>&1 | tail -40"
+
+response:
+  json_schema:
+    type: object
+    additionalProperties: false
+    required: [ci_passed, branch]
+    properties:
+      deliverables_shipped: { type: array, items: { type: string } }
+      deliverables_withheld: { type: array, items: { type: string }, description: "withheld deliverable + why (e.g. no series behind an alert)" }
+      files_changed: { type: array, items: { type: string } }
+      cases_added: { type: array, items: { type: string }, description: "render-test case ids." }
+      ci_passed: { type: boolean }
+      branch: { type: string }
+      pr_url: { type: string }
+
+settings:
+  goose_provider: "openrouter"
+  temperature: 0.1

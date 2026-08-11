@@ -1,0 +1,9 @@
+# Whole-repo human gate (2026-08-11, the reviewer-enable retrace). This repo builds the
+# openrouter-proxy/router — the fleet's egress, credential and budget chokepoint — so with the
+# platform stack's bot reviewer ON, a bot approval must never be able to auto-merge here alone:
+# every PR parks REVIEW_REQUIRED for the owner (the bot review is input, the human is the gate).
+# Enforced only together with require_code_owner_review=true (homelab tofu/github/variables.tf) —
+# without that ruleset flag this file is decorative, which is exactly the hole it closes.
+# Relaxation path, when wanted: carve unowned lanes per path (the agent-runtime pattern), never
+# by deleting the flag.
+* @RasmusSoot

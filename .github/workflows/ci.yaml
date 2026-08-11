@@ -24,6 +24,15 @@ jobs:
 
       # No toolchain install: the ARC runner image bakes single-user Nix + devbox + the LAN
       # nix substituter (homelab docker/arc-runner/, FU-015).
+      # The carved-out dep-bump lane's replacement owner (CODEOWNERS un-owns devbox.{json,lock};
+      # this asserts a PR touching them is a pure version/hash diff — pin-only-lint doctrine).
+      - name: deps-pin-guard (carved-out dep lane)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: devbox run -- sh scripts/deps-pin-guard.sh
+
       - name: Lint + type-check + test (devbox run ci)
         run: devbox run ci
 

@@ -7,3 +7,13 @@
 # Relaxation path, when wanted: carve unowned lanes per path (the agent-runtime pattern), never
 # by deleting the flag.
 * @RasmusSoot
+
+# ── Carve-outs (LAST match wins; a pattern with NO owner REMOVES ownership) ──────────────────
+# The dep-bump lane (Renovate + devbox-update): ownership REPLACED by scripts/deps-pin-guard.sh
+# inside the required `ci` check — a PR touching these may touch nothing else and only
+# version/hash lines. Keeps non-major bumps auto-merging on the bot approval.
+/devbox.json
+/devbox.lock
+# The ownership file owns itself (the first thing an agent could otherwise propose is its own
+# ungating).
+/CODEOWNERS @RasmusSoot

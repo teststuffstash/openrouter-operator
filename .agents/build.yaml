@@ -41,7 +41,10 @@ instructions: |
     to master.
   - If a deliverable is NOT buildable as specified, STOP and report why with the rendered
     evidence — do not fabricate or silently narrow it.
-  - The PR body must link the issue (`Fixes #{{ issue }}`) and show the red→green render case.
+  - PR body: `Fixes #{{ issue }}` ONLY if this PR delivers every acceptance item in the issue; if
+    the round scoped any item out — including one the dispatch comment itself scoped out — write
+    `Refs #{{ issue }}` instead, plus one line naming what remains. And show the red→green render
+    case.
 
 prompt: |
   Build the chart deliverables in GitHub issue #{{ issue }} for this repo, following the

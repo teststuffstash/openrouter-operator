@@ -43,7 +43,21 @@ instructions: |
     clean. NEVER push to master.
   - If the bug is NOT reproducible in the current code, STOP and report that with the (passing) test you
     wrote as evidence — do not fabricate a fix or weaken an assertion to force green.
-  - The PR body must link the issue (`Fixes #{{ issue }}`) and show the red->green case + coverage.
+
+  Infeasible scope (retro r3 F4): if the deliverable REQUIRES a path in the Hard-rules ban list
+  above, or a resource this pod does not have (cluster access, live API credentials, a sibling-repo
+  checkout), it is not implementable as written. Do NOT rescope it yourself and do NOT half-build
+  it: post ONE comment starting exactly `AGENT_INFEASIBLE: <the path or resource>` — first
+  characters of the comment, nothing before it — say in a sentence what the deliverable needed and
+  why the pod cannot supply it, and END the run without pushing. The coordinator's scan reads that
+  marker and parks the issue `agent/blocked` for a human instead of re-dispatching it, so this
+  costs one sub-minute exit rather than a re-ridden session. Do everything you CAN deliver first
+  if part of the issue is inside your reach — then the marker names only the part that is not.
+
+  - PR body: `Fixes #{{ issue }}` ONLY if this PR delivers every acceptance item in the issue; if
+    the round scoped any item out — including one the dispatch comment itself scoped out — write
+    `Refs #{{ issue }}` instead, plus one line naming what remains. And show the red->green case +
+    coverage.
 
 prompt: |
   Fix the bug in GitHub issue #{{ issue }} for this repo, following the instructions exactly.

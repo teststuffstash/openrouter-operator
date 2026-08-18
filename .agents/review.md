@@ -26,7 +26,14 @@ if all hold — otherwise `--request-changes` with specific comments:
    - `build/…` (chart deliverables, `.agents/build.yaml`, since #27): touches `chart/` + `tests/`
      only — `src/` is forbidden, and any PrometheusRule alert must be severity `warning` (never
      `info`), symptom-described, with no alert shipped whose metric has no series behind it.
-   - Both: minimal diff; `deploy/`, `.github/`, `.agents/`, secrets are forbidden for every lane.
+   - Both: minimal diff; `deploy/`, `.github/`, secrets are forbidden for every lane. `.agents/**`
+     is forbidden **for the worker author** (`homelab-agents…[bot]` — a worker must never edit its
+     own ceiling, and that is what this deny protects); an **operator-authored** PR (the human
+     identity, `RasmusSoot`) touching ONLY `.agents/**` prose — recipe/rubric maintenance, no
+     behavior code, no scope-widening of what a worker may touch — is REVIEWABLE on its merits
+     (the author-keyed carve-out, or-op#42; parallel to the dep-bump carve-out below). If such a
+     PR ALSO touches anything outside `.agents/**`, or loosens a worker-facing ceiling, treat it
+     as ordinary scope and judge hard.
 
 CI (`devbox run ci` = ruff + mypy --strict + pytest, `fail_under`) runs separately — don't re-litigate what
 a status check covers; review what it can't.

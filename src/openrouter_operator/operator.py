@@ -96,9 +96,11 @@ def reconcile_key(
     status: kopf.Status,
     namespace: str | None,
     patch: kopf.Patch,
+    name: str = "",
+    uid: str = "",
     **_: Any,
 ) -> None:
-    _reconcile(spec, status, namespace, patch)
+    _reconcile(spec, status, namespace, patch, name, uid)
 
 
 @kopf.timer(GROUP, VERSION, PLURAL, interval=RENEW_TIMER_INTERVAL_S)
@@ -109,6 +111,8 @@ def renew_aging_keys(
     status: kopf.Status,
     namespace: str | None,
     patch: kopf.Patch,
+    name: str = "",
+    uid: str = "",
     **_: Any,
 ) -> None:
     """Periodic pass so a key can be rotated before it dies of AGE (issue #25).
@@ -126,11 +130,16 @@ def renew_aging_keys(
     parsed = OpenRouterKeySpec.model_validate(dict(spec))
     if parsed.expires_at is None:
         return
-    _reconcile(spec, status, namespace, patch)
+    _reconcile(spec, status, namespace, patch, name, uid)
 
 
 def _reconcile(
-    spec: kopf.Spec, status: kopf.Status, namespace: str | None, patch: kopf.Patch
+    spec: kopf.Spec,
+    status: kopf.Status,
+    namespace: str | None,
+    patch: kopf.Patch,
+    name: str = "",
+    uid: str = "",
 ) -> None:
     parsed = OpenRouterKeySpec.model_validate(dict(spec))
     desired = desired_from_spec(parsed)
@@ -152,6 +161,10 @@ def _reconcile(
             minted.value,
             minted.hash,
             parsed.guardrail or "",
+            owner_uid=uid,
+            owner_name=name,
+            owner_api_version=f"{GROUP}/{VERSION}",
+            owner_kind="OpenRouterKey",
         )
         patch.status["openrouter"] = _key_status(port, minted.hash)
     elif isinstance(plan, Rotate):
@@ -172,6 +185,10 @@ def _reconcile(
             minted.value,
             minted.hash,
             parsed.guardrail or "",
+            owner_uid=uid,
+            owner_name=name,
+            owner_api_version=f"{GROUP}/{VERSION}",
+            owner_kind="OpenRouterKey",
         )
         patch.status["openrouter"] = _key_status(port, minted.hash)
         if plan.delete_old:

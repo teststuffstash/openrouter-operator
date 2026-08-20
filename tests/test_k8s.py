@@ -61,9 +61,11 @@ def test_write_key_secret_sets_owner_references(
 
 
 def test_write_key_secret_works_without_owner_references(
-    mock_core_v1: MagicMock,
+    mock_core_v1: MagicMock, caplog: pytest.LogCaptureFixture
 ) -> None:
     """write_key_secret should work when owner metadata is not provided."""
+    caplog.set_level(logging.WARNING)
+
     write_key_secret(
         namespace="default",
         name="my-secret",
@@ -83,6 +85,9 @@ def test_write_key_secret_works_without_owner_references(
     # ownerReferences should be None or empty when not provided
     owner_refs = secret_body.metadata.owner_references
     assert owner_refs is None or len(owner_refs) == 0
+
+    # No warning should be logged when no owner metadata is provided
+    assert not any("Incomplete owner metadata" in record.message for record in caplog.records)
 
 
 def test_write_key_secret_replaces_on_conflict(

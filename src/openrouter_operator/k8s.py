@@ -25,17 +25,43 @@ SESSION_KEY_LABEL = "openrouter.teststuff.net/session-key"
 
 
 def write_key_secret(
-    namespace: str, name: str, key_value: str, key_hash: str = "", guardrail: str = ""
+    namespace: str,
+    name: str,
+    key_value: str,
+    key_hash: str = "",
+    guardrail: str = "",
+    owner_uid: str = "",
+    owner_name: str = "",
+    owner_api_version: str = "",
+    owner_kind: str = "",
 ) -> None:
     """Create-or-replace a Secret holding the OpenRouter key as OPENROUTER_API_KEY.
 
     The label marks it resolvable by the egress proxy's opaque-ref credential injection
     (homelab ADR-087 / FU-018): the proxy honors `ref:<ns>/<name>` ONLY for secrets carrying
     this label, so its get-secret RBAC can never be leveraged into a generic secret oracle.
+
+    When owner metadata is provided, sets ownerReferences so k8s GC deletes the Secret
+    when the CR is deleted (issue #43).
     """
     v1 = _core_v1()
+    owner_references = None
+    if owner_uid and owner_name and owner_api_version and owner_kind:
+        owner_references = [
+            client.V1OwnerReference(
+                api_version=owner_api_version,
+                kind=owner_kind,
+                name=owner_name,
+                uid=owner_uid,
+                controller=True,
+            )
+        ]
     body = client.V1Secret(
-        metadata=client.V1ObjectMeta(name=name, labels={SESSION_KEY_LABEL: "true"}),
+        metadata=client.V1ObjectMeta(
+            name=name,
+            labels={SESSION_KEY_LABEL: "true"},
+            owner_references=owner_references,
+        ),
         # KEY_HASH makes post-hoc accounting durable: agent-finalize surfaces it in the run
         # stats, so the ledger-reflex can backfill a cost_unknown run from the management API
         # long after the CR/pod are gone (homelab FU-057 §ledger).
@@ -57,9 +83,9 @@ def write_key_secret(
 def delete_key_secret(namespace: str, name: str) -> None:
     """Delete a session-key Secret, tolerating a 404.
 
-    `write_key_secret` sets no `ownerReferences`, so k8s GC has nothing to follow when the CR is
-    deleted — the GC path must delete the Secret explicitly. Some are already orphaned from
-    hand-sweeps, so a missing Secret is not an error.
+    While newer Secrets have `ownerReferences` set by `write_key_secret` for k8s GC, older orphaned
+    Secrets lack them and require explicit deletion. Some are already orphaned from hand-sweeps, so
+    a missing Secret is not an error.
     """
     v1 = _core_v1()
     try:

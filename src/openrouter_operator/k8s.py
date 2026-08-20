@@ -5,7 +5,11 @@ of the secret-distribution business.
 
 from __future__ import annotations
 
+import logging
+
 from kubernetes import client, config
+
+logger = logging.getLogger(__name__)
 
 
 def _load_kube_config() -> None:
@@ -56,6 +60,16 @@ def write_key_secret(
                 controller=True,
             )
         ]
+    else:
+        if any((owner_uid, owner_name, owner_api_version, owner_kind)):
+            logger.warning(
+                "Incomplete owner metadata: skipping ownerReferences "
+                "(uid=%s, name=%s, api_version=%s, kind=%s)",
+                owner_uid or "",
+                owner_name or "",
+                owner_api_version or "",
+                owner_kind or "",
+            )
     body = client.V1Secret(
         metadata=client.V1ObjectMeta(
             name=name,

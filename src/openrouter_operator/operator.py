@@ -311,7 +311,7 @@ def gc_expired_keys(
     Nothing generates an event when the clock passes `expiresAt` (the spec never changes), so the
     reconcile handlers would never fire for an expired CR. This timer is the thin caller: the
     *decision* lives in the pure `reconcile.should_collect` (decision-table tested); here we only
-    do the I/O — delete the Secret (404-tolerant, since `write_key_secret` sets no ownerReferences)
+    do the I/O — delete the Secret (404-tolerant; newer Secrets have ownerReferences for k8s GC)
     then the CR itself.
     """
     parsed = OpenRouterKeySpec.model_validate(dict(spec))

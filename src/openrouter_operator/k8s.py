@@ -54,7 +54,6 @@ def write_key_secret(
                 name=owner_name,
                 uid=owner_uid,
                 controller=True,
-                block_owner_deletion=True,
             )
         ]
     body = client.V1Secret(
@@ -84,9 +83,9 @@ def write_key_secret(
 def delete_key_secret(namespace: str, name: str) -> None:
     """Delete a session-key Secret, tolerating a 404.
 
-    `write_key_secret` sets no `ownerReferences`, so k8s GC has nothing to follow when the CR is
-    deleted — the GC path must delete the Secret explicitly. Some are already orphaned from
-    hand-sweeps, so a missing Secret is not an error.
+    While newer Secrets have `ownerReferences` set by `write_key_secret` for k8s GC, older orphaned
+    Secrets lack them and require explicit deletion. Some are already orphaned from hand-sweeps, so
+    a missing Secret is not an error.
     """
     v1 = _core_v1()
     try:

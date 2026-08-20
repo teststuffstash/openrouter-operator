@@ -56,7 +56,7 @@ def test_write_key_secret_sets_owner_references(
     assert owner_ref.kind == owner_kind
     assert owner_ref.api_version == owner_api_version
     assert owner_ref.controller is True
-    assert owner_ref.block_owner_deletion is True
+    assert owner_ref.block_owner_deletion is None
 
 
 def test_write_key_secret_works_without_owner_references(

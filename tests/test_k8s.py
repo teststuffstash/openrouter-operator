@@ -141,3 +141,46 @@ def test_delete_key_secret_propagates_other_errors(mock_core_v1: MagicMock) -> N
         delete_key_secret(namespace="default", name="my-secret")
 
     assert exc_info.value.status == 500
+
+
+def test_write_key_secret_logs_when_owner_references_skipped(
+    mock_core_v1: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """write_key_secret should log a warning when owner metadata is incomplete."""
+    import logging
+
+    caplog.set_level(logging.WARNING)
+
+    # Call without owner metadata (only uid provided, rest empty)
+    write_key_secret(
+        namespace="default",
+        name="my-secret",
+        key_value="sk-or-test",
+        owner_uid="12345",  # partial owner metadata
+    )
+
+    # Verify warning was logged
+    assert any("owner" in record.message.lower() for record in caplog.records)
+
+
+def test_write_key_secret_logs_when_owner_name_missing(
+    mock_core_v1: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """write_key_secret should log a warning when owner_name is missing."""
+    import logging
+
+    caplog.set_level(logging.WARNING)
+
+    # Call with incomplete owner metadata (missing owner_name)
+    write_key_secret(
+        namespace="default",
+        name="my-secret",
+        key_value="sk-or-test",
+        owner_uid="12345",
+        owner_api_version="openrouter.teststuff.net/v1alpha1",
+        owner_kind="OpenRouterKey",
+        # owner_name is missing
+    )
+
+    # Verify warning was logged
+    assert any("owner" in record.message.lower() for record in caplog.records)

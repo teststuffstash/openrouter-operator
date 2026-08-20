@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 from unittest.mock import MagicMock, patch
 
@@ -147,8 +148,6 @@ def test_write_key_secret_logs_when_owner_references_skipped(
     mock_core_v1: MagicMock, caplog: pytest.LogCaptureFixture
 ) -> None:
     """write_key_secret should log a warning when owner metadata is incomplete."""
-    import logging
-
     caplog.set_level(logging.WARNING)
 
     # Call without owner metadata (only uid provided, rest empty)
@@ -159,16 +158,18 @@ def test_write_key_secret_logs_when_owner_references_skipped(
         owner_uid="12345",  # partial owner metadata
     )
 
-    # Verify warning was logged
-    assert any("owner" in record.message.lower() for record in caplog.records)
+    # Verify warning was logged with the exact rendered message
+    expected_msg = (
+        "Incomplete owner metadata: skipping ownerReferences "
+        "(uid=12345, name=, api_version=, kind=)"
+    )
+    assert any(expected_msg in record.message for record in caplog.records)
 
 
 def test_write_key_secret_logs_when_owner_name_missing(
     mock_core_v1: MagicMock, caplog: pytest.LogCaptureFixture
 ) -> None:
     """write_key_secret should log a warning when owner_name is missing."""
-    import logging
-
     caplog.set_level(logging.WARNING)
 
     # Call with incomplete owner metadata (missing owner_name)
@@ -182,5 +183,10 @@ def test_write_key_secret_logs_when_owner_name_missing(
         # owner_name is missing
     )
 
-    # Verify warning was logged
-    assert any("owner" in record.message.lower() for record in caplog.records)
+    # Verify warning was logged with the exact rendered message
+    expected_msg = (
+        "Incomplete owner metadata: skipping ownerReferences "
+        "(uid=12345, name=, api_version=openrouter.teststuff.net/v1alpha1, "
+        "kind=OpenRouterKey)"
+    )
+    assert any(expected_msg in record.message for record in caplog.records)

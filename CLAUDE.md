@@ -10,10 +10,6 @@ was too buggy and provider-http was untestable without a live API — the offici
 typed, mockable surface so reconcile logic is unit-tested as a decision table and breaking API
 changes fail `mypy --strict` in CI, not in the cluster.
 
-## Environment
-
-Running inside a Docker jail — see `/workspace/CLAUDE.md` for container setup, permissions, and tools.
-
 ## Tooling & CI
 
 Per-project CLI tools live in `devbox.json` (Nix-backed). The CI gate is the seam:

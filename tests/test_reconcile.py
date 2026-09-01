@@ -84,11 +84,13 @@ def _secret_shape_drifted() -> SecretState:
         ("budget drift -> update", _state(limit=10.0), _secret_ok(), Update),
         ("reset drift -> update", _state(reset=ResetInterval.monthly), _secret_ok(), Update),
         # Secret drift (issue #53): upstream key healthy, but the k8s Secret is wrong
+        # A missing Secret cannot be normalized (key value is only known at mint time),
+        # so it must rotate to mint a fresh key + write the Secret.
         (
-            "Secret missing, key healthy -> normalize",
+            "Secret missing, key healthy -> rotate (cannot recover value)",
             _state(),
             _secret_missing(),
-            NormalizeSecret,
+            Rotate,
         ),
         (
             "Secret unlabeled, key healthy -> normalize",
@@ -245,11 +247,13 @@ _EXTENDED = datetime(2026, 6, 29, 14, 0, tzinfo=UTC)  # live key already lasts L
             Create,
         ),
         # Secret drift on ephemeral keys (issue #53)
+        # A missing Secret cannot be normalized (key value is only known at mint time),
+        # so it must rotate to mint a fresh key + write the Secret.
         (
-            "session key healthy, Secret missing -> normalize",
+            "session key healthy, Secret missing -> rotate (cannot recover value)",
             _eph_state(expires_at=_DESIRED_EXP_STORED),
             _secret_missing(),
-            NormalizeSecret,
+            Rotate,
         ),
         (
             "session key healthy, Secret unlabeled -> normalize",

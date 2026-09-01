@@ -219,28 +219,25 @@ def _reconcile(
         port.update_key(plan.key_hash, desired.limit, desired.reset_interval)
         patch.status["openrouter"] = _key_status(port, plan.key_hash)
     elif isinstance(plan, NormalizeSecret):
-        # The upstream key is healthy, but the k8s Secret is missing, unlabeled, or shape-drifted
+        # The upstream key is healthy, but the k8s Secret is unlabeled or shape-drifted
         # (issue #53). Read the existing key value from the Secret and rewrite it with correct
-        # labels and data keys. If the Secret is missing entirely, we cannot recover the value
-        # without a Rotate — but the Secret existing with wrong metadata is the common case.
-        if secret_raw is not None:
-            existing_value = secret_raw["data"].get("OPENROUTER_API_KEY", "")
-            existing_hash = secret_raw["data"].get("KEY_HASH", key_hash or "")
-            existing_guardrail = secret_raw["data"].get("GUARDRAIL", parsed.guardrail or "")
-            write_key_secret(
-                namespace,
-                parsed.target_secret_name(),
-                existing_value,
-                existing_hash,
-                existing_guardrail,
-                owner_uid=uid,
-                owner_name=name,
-                owner_api_version=f"{GROUP}/{VERSION}",
-                owner_kind="OpenRouterKey",
-            )
-        # If the Secret is missing entirely, fall through to the NoOp status update below
-        # (the next reconcile pass will still see the drift and try again — or a Rotate will
-        # eventually mint a fresh key and write the Secret from scratch).
+        # labels and data keys. The Secret is guaranteed to exist here — a missing Secret
+        # returns Rotate instead, since the key value is only known at mint time.
+        assert secret_raw is not None, "NormalizeSecret requires an existing Secret"
+        existing_value = secret_raw["data"].get("OPENROUTER_API_KEY", "")
+        existing_hash = secret_raw["data"].get("KEY_HASH", key_hash or "")
+        existing_guardrail = secret_raw["data"].get("GUARDRAIL", parsed.guardrail or "")
+        write_key_secret(
+            namespace,
+            parsed.target_secret_name(),
+            existing_value,
+            existing_hash,
+            existing_guardrail,
+            owner_uid=uid,
+            owner_name=name,
+            owner_api_version=f"{GROUP}/{VERSION}",
+            owner_kind="OpenRouterKey",
+        )
         if observed is not None:
             patch.status["openrouter"] = _observed_status(observed)
 

@@ -65,11 +65,14 @@ class NoOp:
 
 @dataclass(frozen=True)
 class NormalizeSecret:
-    """The upstream key is healthy, but the k8s Secret is missing, unlabeled, or shape-drifted.
+    """The upstream key is healthy, but the k8s Secret is unlabeled or shape-drifted.
 
     The operator should read the existing Secret value and rewrite it with correct labels and
     data keys (OPENROUTER_API_KEY, KEY_HASH, GUARDRAIL) via `write_key_secret()`. Idempotent:
     the key value itself is only known at mint, so a wrong-VALUE Secret still needs a Rotate.
+
+    NOTE: a MISSING Secret returns `Rotate` instead — the key value is only returned once at
+    mint time, so we cannot recover it without minting a fresh key.
     """
 
     pass
@@ -142,9 +145,15 @@ def decide(
         return Update(observed.hash, desired)
 
     # Upstream key is healthy — check the k8s Secret state (issue #53).
-    # A legacy/adopted Secret that is missing, unlabeled, or shape-drifted must be normalized
+    # A legacy/adopted Secret that is missing, unlabeled, or shape-drifted must be repaired
     # on an ordinary NoOp pass, not left to silently break credential resolution.
-    if secret is None or not secret.exists or not secret.has_label or not secret.has_all_keys:
+    if secret is None or not secret.exists:
+        # Secret is missing entirely — we cannot recover the key value (it is only returned
+        # once at mint time), so mint a fresh key + write the Secret via Rotate.
+        return Rotate(observed.hash, desired)
+    if not secret.has_label or not secret.has_all_keys:
+        # Secret exists but is unlabeled or shape-drifted — read the existing value and
+        # rewrite it with correct labels and data keys.
         return NormalizeSecret()
 
     return NoOp()

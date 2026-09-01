@@ -87,10 +87,10 @@ def _secret_shape_drifted() -> SecretState:
         # A missing Secret cannot be normalized (key value is only known at mint time),
         # so it must rotate to mint a fresh key + write the Secret.
         (
-            "Secret missing, key healthy -> rotate (cannot recover value)",
+            "Secret missing, key healthy -> noop (cannot recover value; issue #56)",
             _state(),
             _secret_missing(),
-            Rotate,
+            NoOp,
         ),
         (
             "Secret unlabeled, key healthy -> normalize",
@@ -250,10 +250,10 @@ _EXTENDED = datetime(2026, 6, 29, 14, 0, tzinfo=UTC)  # live key already lasts L
         # A missing Secret cannot be normalized (key value is only known at mint time),
         # so it must rotate to mint a fresh key + write the Secret.
         (
-            "session key healthy, Secret missing -> rotate (cannot recover value)",
+            "session key healthy, Secret missing -> noop (cannot recover value; issue #56)",
             _eph_state(expires_at=_DESIRED_EXP_STORED),
             _secret_missing(),
-            Rotate,
+            NoOp,
         ),
         (
             "session key healthy, Secret unlabeled -> normalize",

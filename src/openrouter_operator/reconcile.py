@@ -71,8 +71,9 @@ class NormalizeSecret:
     data keys (OPENROUTER_API_KEY, KEY_HASH, GUARDRAIL) via `write_key_secret()`. Idempotent:
     the key value itself is only known at mint, so a wrong-VALUE Secret still needs a Rotate.
 
-    NOTE: a MISSING Secret returns `Rotate` instead — the key value is only returned once at
-    mint time, so we cannot recover it without minting a fresh key.
+    NOTE: a MISSING Secret returns `NoOp` instead — the key value is only returned once at
+    mint time, so we cannot recover it without minting a fresh key. The missing-Secret
+    design (re-mint vs surface) is issue #56.
     """
 
     pass
@@ -149,8 +150,10 @@ def decide(
     # on an ordinary NoOp pass, not left to silently break credential resolution.
     if secret is None or not secret.exists:
         # Secret is missing entirely — we cannot recover the key value (it is only returned
-        # once at mint time), so mint a fresh key + write the Secret via Rotate.
-        return Rotate(observed.hash, desired)
+        # once at mint time), and re-minting would delete a live, healthy fleet credential
+        # (the old key is deleted on Rotate by default). Leave the upstream key alone and
+        # surface the gap; the missing-Secret design (re-mint vs surface) is issue #56.
+        return NoOp()
     if not secret.has_label or not secret.has_all_keys:
         # Secret exists but is unlabeled or shape-drifted — read the existing value and
         # rewrite it with correct labels and data keys.

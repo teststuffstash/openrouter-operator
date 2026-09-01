@@ -17,14 +17,22 @@ from typing import Any, ParamSpec, TypeVar
 import kopf
 
 from .adapter import OpenRouterAdapter
-from .k8s import delete_cr, delete_key_secret, write_key_secret
+from .k8s import (
+    REQUIRED_DATA_KEYS,
+    SESSION_KEY_LABEL,
+    delete_cr,
+    delete_key_secret,
+    read_key_secret,
+    write_key_secret,
+)
 from .metrics import KeyOpMetrics, MeteredPort, credit_poll_interval_s, poll_account_credit
 from .models import OpenRouterKeySpec
-from .ports import AccountPort, KeyState, OpenRouterPort, RateLimited
+from .ports import AccountPort, KeyState, OpenRouterPort, RateLimited, SecretState
 from .reconcile import (
     RENEW_THRESHOLD_S,
     Create,
     NoOp,
+    NormalizeSecret,
     ParkUntilReset,
     Rotate,
     Update,
@@ -149,7 +157,18 @@ def _reconcile(
 
     key_hash = (status.get("openrouter") or {}).get("hash")
     observed = port.get_key(key_hash) if key_hash else None
-    plan = decide(desired, observed, datetime.now(UTC))
+
+    # Read the k8s Secret to detect drift (issue #53): a legacy/adopted Secret that is missing,
+    # unlabeled, or shape-drifted must be normalized even when the upstream key is healthy.
+    secret_raw = read_key_secret(namespace, parsed.target_secret_name())
+    secret_state = SecretState(
+        exists=secret_raw is not None,
+        has_label=bool(secret_raw and SESSION_KEY_LABEL in secret_raw["labels"]),
+        has_all_keys=bool(
+            secret_raw and REQUIRED_DATA_KEYS.issubset(secret_raw.get("data", {}).keys())
+        ),
+    )
+    plan = decide(desired, observed, secret_state, datetime.now(UTC))
 
     if isinstance(plan, Create):
         minted = port.create_key(
@@ -199,6 +218,32 @@ def _reconcile(
     elif isinstance(plan, Update):
         port.update_key(plan.key_hash, desired.limit, desired.reset_interval)
         patch.status["openrouter"] = _key_status(port, plan.key_hash)
+    elif isinstance(plan, NormalizeSecret):
+        # The upstream key is healthy, but the k8s Secret is missing, unlabeled, or shape-drifted
+        # (issue #53). Read the existing key value from the Secret and rewrite it with correct
+        # labels and data keys. If the Secret is missing entirely, we cannot recover the value
+        # without a Rotate — but the Secret existing with wrong metadata is the common case.
+        if secret_raw is not None:
+            existing_value = secret_raw["data"].get("OPENROUTER_API_KEY", "")
+            existing_hash = secret_raw["data"].get("KEY_HASH", key_hash or "")
+            existing_guardrail = secret_raw["data"].get("GUARDRAIL", parsed.guardrail or "")
+            write_key_secret(
+                namespace,
+                parsed.target_secret_name(),
+                existing_value,
+                existing_hash,
+                existing_guardrail,
+                owner_uid=uid,
+                owner_name=name,
+                owner_api_version=f"{GROUP}/{VERSION}",
+                owner_kind="OpenRouterKey",
+            )
+        # If the Secret is missing entirely, fall through to the NoOp status update below
+        # (the next reconcile pass will still see the drift and try again — or a Rotate will
+        # eventually mint a fresh key and write the Secret from scratch).
+        if observed is not None:
+            patch.status["openrouter"] = _observed_status(observed)
+
     elif isinstance(plan, NoOp) and observed is not None:
         # Surface the LIVE expiry even on a no-change pass, so dispatch-time pre-flights
         # (homelab agent-session.sh: refuse a key with <30 min real life) read truth, not the spec.

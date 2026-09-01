@@ -6,6 +6,7 @@ of the secret-distribution business.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from kubernetes import client, config
 
@@ -26,6 +27,31 @@ def _core_v1() -> client.CoreV1Api:
 
 
 SESSION_KEY_LABEL = "openrouter.teststuff.net/session-key"
+
+
+REQUIRED_DATA_KEYS = {"OPENROUTER_API_KEY", "KEY_HASH", "GUARDRAIL"}
+
+
+def read_key_secret(namespace: str, name: str) -> dict[str, Any] | None:
+    """Read a k8s Secret and return its metadata + data, or None if it doesn't exist.
+
+    Returns a dict with keys:
+      - `data`: dict of the Secret's string_data (decoded from base64)
+      - `labels`: dict of the Secret's labels
+    Used by the operator to detect Secret drift (issue #53): missing, unlabeled, or
+    shape-drifted Secrets are normalized on a NoOp pass.
+    """
+    v1 = _core_v1()
+    try:
+        secret = v1.read_namespaced_secret(name=name, namespace=namespace)
+    except client.ApiException as exc:
+        if exc.status == 404:
+            return None
+        raise
+    return {
+        "data": {k: v for k, v in (secret.data or {}).items()},
+        "labels": dict(secret.metadata.labels or {}),
+    }
 
 
 def write_key_secret(

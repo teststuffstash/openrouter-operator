@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 from .models import OpenRouterKeySpec, ResetInterval
-from .ports import KeyState
+from .ports import KeyState, SecretState
 
 
 @dataclass(frozen=True)
@@ -63,7 +63,19 @@ class NoOp:
     pass
 
 
-Plan = Create | Update | Rotate | NoOp
+@dataclass(frozen=True)
+class NormalizeSecret:
+    """The upstream key is healthy, but the k8s Secret is missing, unlabeled, or shape-drifted.
+
+    The operator should read the existing Secret value and rewrite it with correct labels and
+    data keys (OPENROUTER_API_KEY, KEY_HASH, GUARDRAIL) via `write_key_secret()`. Idempotent:
+    the key value itself is only known at mint, so a wrong-VALUE Secret still needs a Rotate.
+    """
+
+    pass
+
+
+Plan = Create | Update | Rotate | NoOp | NormalizeSecret
 
 # OpenRouter stores a requested expiry rounded by a few seconds (a key minted for 18:40:10 reads
 # back 18:40:08) — strict equality would rotate every reconcile, forever. Anything inside this
@@ -95,7 +107,9 @@ def desired_from_spec(spec: OpenRouterKeySpec) -> Desired:
     )
 
 
-def decide(desired: Desired, observed: KeyState | None, now: datetime) -> Plan:
+def decide(
+    desired: Desired, observed: KeyState | None, secret: SecretState | None, now: datetime
+) -> Plan:
     """Decide the action to reconcile `observed` toward `desired`.
 
     - no key yet, or the existing one is DEAD (expired/revoked) -> Create (mint / re-mint)
@@ -126,6 +140,12 @@ def decide(desired: Desired, observed: KeyState | None, now: datetime) -> Plan:
     drifted = observed.limit != desired.limit or observed.reset_interval != desired.reset_interval
     if drifted:
         return Update(observed.hash, desired)
+
+    # Upstream key is healthy — check the k8s Secret state (issue #53).
+    # A legacy/adopted Secret that is missing, unlabeled, or shape-drifted must be normalized
+    # on an ordinary NoOp pass, not left to silently break credential resolution.
+    if secret is None or not secret.exists or not secret.has_label or not secret.has_all_keys:
+        return NormalizeSecret()
 
     return NoOp()
 

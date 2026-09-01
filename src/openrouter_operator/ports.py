@@ -66,6 +66,21 @@ class MintedKey:
 
 
 @dataclass(frozen=True)
+class SecretState:
+    """Observed state of the k8s Secret that holds the OpenRouter key.
+
+    `exists` is False when the Secret is absent (never created, or deleted out of band).
+    `has_label` is True when the Secret carries the `openrouter.teststuff.net/session-key` label.
+    `has_all_keys` is True when the Secret has all three data keys: OPENROUTER_API_KEY, KEY_HASH,
+    GUARDRAIL — a legacy/adopted Secret with only the first key is shape-drifted.
+    """
+
+    exists: bool
+    has_label: bool
+    has_all_keys: bool
+
+
+@dataclass(frozen=True)
 class AccountCredits:
     """The account-scope credit ledger from `GET /api/v1/credits` (issue #29).
 

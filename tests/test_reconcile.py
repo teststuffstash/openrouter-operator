@@ -15,7 +15,7 @@ from openrouter_operator.adapter import OpenRouterAdapter, _to_state
 from openrouter_operator.metrics import KeyOpMetrics, MeteredPort
 from openrouter_operator.models import OpenRouterKeySpec, ResetInterval
 from openrouter_operator.operator import RENEW_TIMER_INTERVAL_S
-from openrouter_operator.ports import KeyState, MintedKey, OpenRouterPort, RateLimited
+from openrouter_operator.ports import KeyState, MintedKey, OpenRouterPort, RateLimited, SecretState
 from openrouter_operator.reconcile import (
     MIN_PARK_S,
     RENEW_THRESHOLD_S,
@@ -24,6 +24,7 @@ from openrouter_operator.reconcile import (
     Create,
     Desired,
     NoOp,
+    NormalizeSecret,
     ParkUntilReset,
     Plan,
     RetryPlan,
@@ -58,17 +59,55 @@ def _state(
     return KeyState(hash="GK1", name="sleep-tracking-agent", limit=limit, reset_interval=reset)
 
 
+def _secret_ok() -> SecretState:
+    """A healthy Secret: exists, labeled, all three data keys present."""
+    return SecretState(exists=True, has_label=True, has_all_keys=True)
+
+
+def _secret_missing() -> SecretState:
+    return SecretState(exists=False, has_label=False, has_all_keys=False)
+
+
+def _secret_unlabeled() -> SecretState:
+    return SecretState(exists=True, has_label=False, has_all_keys=True)
+
+
+def _secret_shape_drifted() -> SecretState:
+    return SecretState(exists=True, has_label=True, has_all_keys=False)
+
+
 @pytest.mark.parametrize(
-    ("description", "observed", "expected"),
+    ("description", "observed", "secret", "expected"),
     [
-        ("no key yet -> create", None, Create),
-        ("everything matches -> noop", _state(), NoOp),
-        ("budget drift -> update", _state(limit=10.0), Update),
-        ("reset drift -> update", _state(reset=ResetInterval.monthly), Update),
+        ("no key yet -> create", None, _secret_missing(), Create),
+        ("everything matches -> noop", _state(), _secret_ok(), NoOp),
+        ("budget drift -> update", _state(limit=10.0), _secret_ok(), Update),
+        ("reset drift -> update", _state(reset=ResetInterval.monthly), _secret_ok(), Update),
+        # Secret drift (issue #53): upstream key healthy, but the k8s Secret is wrong
+        (
+            "Secret missing, key healthy -> normalize",
+            _state(),
+            _secret_missing(),
+            NormalizeSecret,
+        ),
+        (
+            "Secret unlabeled, key healthy -> normalize",
+            _state(),
+            _secret_unlabeled(),
+            NormalizeSecret,
+        ),
+        (
+            "Secret shape-drifted (missing data keys), key healthy -> normalize",
+            _state(),
+            _secret_shape_drifted(),
+            NormalizeSecret,
+        ),
     ],
 )
-def test_decide(description: str, observed: KeyState | None, expected: type[Plan]) -> None:
-    plan = decide(DESIRED, observed, NOW)
+def test_decide(
+    description: str, observed: KeyState | None, secret: SecretState, expected: type[Plan]
+) -> None:
+    plan = decide(DESIRED, observed, secret, NOW)
     assert isinstance(plan, expected), description
     if isinstance(plan, Update):
         assert observed is not None
@@ -148,17 +187,19 @@ _EXTENDED = datetime(2026, 6, 29, 14, 0, tzinfo=UTC)  # live key already lasts L
 
 
 @pytest.mark.parametrize(
-    ("description", "observed", "expected"),
+    ("description", "observed", "secret", "expected"),
     [
-        ("no session key yet -> create", None, Create),
+        ("no session key yet -> create", None, _secret_missing(), Create),
         (
             "session key live, cap + expiry match (within storage rounding) -> noop",
             _eph_state(expires_at=_DESIRED_EXP_STORED),
+            _secret_ok(),
             NoOp,
         ),
         (
             "session cap drift -> update",
             _eph_state(limit=1.0, expires_at=_DESIRED_EXP_STORED),
+            _secret_ok(),
             Update,
         ),
         # issue #6 (proven live 2026-07-09): PATCH cannot change expires_at, so expiry drift ROTATES
@@ -167,26 +208,67 @@ _EXTENDED = datetime(2026, 6, 29, 14, 0, tzinfo=UTC)  # live key already lasts L
         (
             "expiry drift beyond tolerance (12:30 vs desired 12:00) -> rotate",
             _eph_state(expires_at=_FUTURE),
+            _secret_ok(),
             Rotate,
         ),
-        ("larger drift (+2h vs desired) -> rotate", _eph_state(expires_at=_EXTENDED), Rotate),
-        ("no expiry on live key, spec wants one -> rotate", _eph_state(expires_at=None), Rotate),
+        (
+            "larger drift (+2h vs desired) -> rotate",
+            _eph_state(expires_at=_EXTENDED),
+            _secret_ok(),
+            Rotate,
+        ),
+        (
+            "no expiry on live key, spec wants one -> rotate",
+            _eph_state(expires_at=None),
+            _secret_ok(),
+            Rotate,
+        ),
         # expiry drift OUTRANKS cap drift: an Update would PATCH the cap and keep the stale
         # deadline — the whole issue-#6 failure shape.
         (
             "expiry + cap both drifted -> rotate (not update)",
             _eph_state(limit=1.0, expires_at=_FUTURE),
+            _secret_ok(),
             Rotate,
         ),
         # self-heal: a dead key (the '401 User not found' corpse) must re-mint, not NoOp
-        ("session key EXPIRED -> recreate", _eph_state(expires_at=_PAST), Create),
-        ("session key REVOKED (disabled) -> recreate", _eph_state(disabled=True), Create),
+        (
+            "session key EXPIRED -> recreate",
+            _eph_state(expires_at=_PAST),
+            _secret_missing(),
+            Create,
+        ),
+        (
+            "session key REVOKED (disabled) -> recreate",
+            _eph_state(disabled=True),
+            _secret_missing(),
+            Create,
+        ),
+        # Secret drift on ephemeral keys (issue #53)
+        (
+            "session key healthy, Secret missing -> normalize",
+            _eph_state(expires_at=_DESIRED_EXP_STORED),
+            _secret_missing(),
+            NormalizeSecret,
+        ),
+        (
+            "session key healthy, Secret unlabeled -> normalize",
+            _eph_state(expires_at=_DESIRED_EXP_STORED),
+            _secret_unlabeled(),
+            NormalizeSecret,
+        ),
+        (
+            "session key healthy, Secret shape-drifted -> normalize",
+            _eph_state(expires_at=_DESIRED_EXP_STORED),
+            _secret_shape_drifted(),
+            NormalizeSecret,
+        ),
     ],
 )
 def test_decide_ephemeral(
-    description: str, observed: KeyState | None, expected: type[Plan]
+    description: str, observed: KeyState | None, secret: SecretState, expected: type[Plan]
 ) -> None:
-    plan = decide(EPHEMERAL_DESIRED, observed, NOW)
+    plan = decide(EPHEMERAL_DESIRED, observed, secret, NOW)
     assert isinstance(plan, expected), description
 
 
@@ -196,15 +278,16 @@ def test_rotate_skipped_when_desired_expiry_already_past() -> None:
     # renewal window, so the age decision answers this instead — and answers it the same way,
     # because the live key (12:30) is nowhere near its own expiry at 11:00. NoOp either way.
     stale = Desired(name="x", limit=0.5, reset_interval=None, expires_at=_PAST)
-    assert isinstance(decide(stale, _eph_state(expires_at=_FUTURE), NOW), NoOp)
+    assert isinstance(decide(stale, _eph_state(expires_at=_FUTURE), _secret_ok(), NOW), NoOp)
 
 
 def test_decide_skips_born_dead_remint() -> None:
     # dead key AND the spec's own expiresAt is already past → a re-mint would be born-dead and
     # hot-loop, so NoOp and wait for a fresh CR (new round) instead.
     stale = Desired(name="x", limit=0.5, reset_interval=None, expires_at=_PAST)
-    assert isinstance(decide(stale, _eph_state(expires_at=_PAST), NOW), NoOp)
-    assert isinstance(decide(stale, None, NOW), NoOp)  # never minted + already-past spec -> NoOp
+    assert isinstance(decide(stale, _eph_state(expires_at=_PAST), _secret_ok(), NOW), NoOp)
+    # never minted + already-past spec -> NoOp
+    assert isinstance(decide(stale, None, _secret_ok(), NOW), NoOp)
 
 
 def test_ephemeral_desired_and_helpers() -> None:
@@ -363,7 +446,7 @@ def test_decide_renews_before_age_death(
     expected_limit: float | None,
     deletes_old: bool,
 ) -> None:
-    plan = decide(desired, observed, now)
+    plan = decide(desired, observed, _secret_ok(), now)
     assert isinstance(plan, expected), description
     if isinstance(plan, Rotate):
         assert plan.key_hash == observed.hash, description
@@ -391,6 +474,7 @@ def test_renewal_chain_caps_total_spend_across_rotations() -> None:
         plan = decide(
             EPHEMERAL_DESIRED,
             _eph_state(limit=limit, expires_at=expires, usage=burn_per_key),
+            _secret_ok(),
             now,
         )
         assert isinstance(plan, Rotate) and plan.delete_old is False
@@ -405,6 +489,7 @@ def test_renewal_chain_caps_total_spend_across_rotations() -> None:
     last = decide(
         EPHEMERAL_DESIRED,
         _eph_state(limit=limit, expires_at=expires, usage=limit),
+        _secret_ok(),
         expires - timedelta(minutes=10),
     )
     assert isinstance(last, NoOp)

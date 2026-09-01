@@ -5,6 +5,7 @@ of the secret-distribution business.
 
 from __future__ import annotations
 
+import base64
 import logging
 from typing import Any
 
@@ -36,7 +37,7 @@ def read_key_secret(namespace: str, name: str) -> dict[str, Any] | None:
     """Read a k8s Secret and return its metadata + data, or None if it doesn't exist.
 
     Returns a dict with keys:
-      - `data`: dict of the Secret's string_data (decoded from base64)
+      - `data`: dict of the Secret's data values, base64-DECODED to plaintext
       - `labels`: dict of the Secret's labels
     Used by the operator to detect Secret drift (issue #53): missing, unlabeled, or
     shape-drifted Secrets are normalized on a NoOp pass.
@@ -49,7 +50,14 @@ def read_key_secret(namespace: str, name: str) -> dict[str, Any] | None:
             return None
         raise
     return {
-        "data": {k: v for k, v in (secret.data or {}).items()},
+        # V1Secret.data values are BASE64-ENCODED by the API; decode here so callers hold
+        # plaintext — write_key_secret() writes via string_data (plaintext), so returning raw
+        # .data would double-encode the credential on the NormalizeSecret rewrite (the round-4
+        # seat catch: the first normalization pass would corrupt the live key it exists to heal).
+        "data": {
+            k: base64.b64decode(v).decode("utf-8", "replace")
+            for k, v in (secret.data or {}).items()
+        },
         "labels": dict(secret.metadata.labels or {}),
     }
 

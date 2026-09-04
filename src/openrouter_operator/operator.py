@@ -224,7 +224,9 @@ def _reconcile(
         # (issue #53). Read the existing key value from the Secret and rewrite it with correct
         # labels and data keys. The Secret is guaranteed to exist here — a missing Secret
         # returns SecretMissing instead, since the key value is only known at mint time.
-        METRICS.record_secret_found()
+        METRICS.record_secret_found(parsed.target_secret_name())
+        patch.status.setdefault("conditions", [])
+        _clear_secret_missing_condition(patch)
         assert secret_raw is not None, "NormalizeSecret requires an existing Secret"
         existing_value = secret_raw["data"].get("OPENROUTER_API_KEY", "")
         existing_hash = secret_raw["data"].get("KEY_HASH", key_hash or "")
@@ -246,7 +248,7 @@ def _reconcile(
     elif isinstance(plan, SecretMissing):
         # The upstream key is healthy, but the k8s Secret is absent (deleted out of band).
         # Surface this as a status condition + metric; do NOT re-mint (issue #56).
-        METRICS.record_secret_missing()
+        METRICS.record_secret_missing(plan.secret_name)
         patch.status["conditions"] = [
             {
                 "type": "SecretMissing",
@@ -265,7 +267,9 @@ def _reconcile(
     elif isinstance(plan, NoOp) and observed is not None:
         # Surface the LIVE expiry even on a no-change pass, so dispatch-time pre-flights
         # (homelab agent-session.sh: refuse a key with <30 min real life) read truth, not the spec.
-        METRICS.record_secret_found()
+        METRICS.record_secret_found(parsed.target_secret_name())
+        patch.status.setdefault("conditions", [])
+        _clear_secret_missing_condition(patch)
         patch.status["openrouter"] = _observed_status(observed)
 
 
@@ -276,6 +280,33 @@ def _key_status(port: OpenRouterPort, key_hash: str) -> dict[str, Any]:
     if state is None:  # read-back raced/failed; the hash alone still lets the next pass reconcile
         return {"hash": key_hash}
     return _observed_status(state)
+
+
+def _clear_secret_missing_condition(patch: kopf.Patch) -> None:
+    """Set the SecretMissing condition to False when the Secret is present (issue #56).
+
+    The condition is written as True in the SecretMissing handler and must be cleared when
+    the Secret comes back — otherwise a restored Secret would report SecretMissing forever.
+    """
+    conditions = patch.status.get("conditions", [])
+    for i, cond in enumerate(conditions):
+        if isinstance(cond, dict) and cond.get("type") == "SecretMissing":
+            conditions[i] = {
+                **cond,
+                "status": "False",
+                "lastTransitionTime": datetime.now(UTC).isoformat(),
+            }
+            return
+    # No existing SecretMissing condition — nothing to clear.
+    conditions.append(
+        {
+            "type": "SecretMissing",
+            "status": "False",
+            "reason": "",
+            "message": "k8s Secret is present.",
+            "lastTransitionTime": datetime.now(UTC).isoformat(),
+        }
+    )
 
 
 def _observed_status(state: KeyState) -> dict[str, Any]:

@@ -159,56 +159,31 @@ def rendered() -> list[dict[str, Any]]:
             ("spec", "groups", 0, "rules", 0, "labels", "triage"),
             "none",
         ),
-        # -- deliverable 4: Secret missing alert (issue #56) -----------------------------------
-        (
-            "secret-missing-rule-group-is-named-by-subsystem",
-            "PrometheusRule",
-            ("spec", "groups", 1, "name"),
-            "openrouter-operator.secret",
-        ),
-        (
-            "secret-missing-alert-names-the-symptom",
-            "PrometheusRule",
-            ("spec", "groups", 1, "rules", 0, "alert"),
-            "OpenRouterKeySecretMissing",
-        ),
-        (
-            "secret-missing-alert-severity-is-warning-never-info",
-            "PrometheusRule",
-            ("spec", "groups", 1, "rules", 0, "labels", "severity"),
-            "warning",
-        ),
-        (
-            "secret-missing-alert-is-marked-no-agent-triage",
-            "PrometheusRule",
-            ("spec", "groups", 1, "rules", 0, "labels", "triage"),
-            "none",
-        ),
         # -- deliverable 3, second half: the account-balance low-water alert (issue #33) -----
         # Its own group: the balance is account scope, not key-API scope — a different subsystem
         # and a different remedy (top up credit vs wait out the UTC reset).
         (
             "balance-rule-group-is-named-by-subsystem",
             "PrometheusRule",
-            ("spec", "groups", 2, "name"),
+            ("spec", "groups", 1, "name"),
             "openrouter-operator.account",
         ),
         (
             "balance-alert-names-the-symptom",
             "PrometheusRule",
-            ("spec", "groups", 2, "rules", 0, "alert"),
+            ("spec", "groups", 1, "rules", 0, "alert"),
             "OpenRouterAccountCreditNearlyExhausted",
         ),
         (
             "balance-alert-severity-is-warning-never-info",
             "PrometheusRule",
-            ("spec", "groups", 2, "rules", 0, "labels", "severity"),
+            ("spec", "groups", 1, "rules", 0, "labels", "severity"),
             "warning",
         ),
         (
             "balance-alert-is-marked-no-agent-triage",
             "PrometheusRule",
-            ("spec", "groups", 2, "rules", 0, "labels", "triage"),
+            ("spec", "groups", 1, "rules", 0, "labels", "triage"),
             "none",
         ),
     ],

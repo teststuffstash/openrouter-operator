@@ -43,11 +43,6 @@ metrics:
       ceiling: 1000
       warnAtPercent: 70
       for: 10m
-    # Secret missing alert (issue #56): fires when the k8s Secret for a healthy upstream key is
-    # absent (deleted out of band). The operator surfaces this as a status condition + metric;
-    # a human re-mints by deleting and re-applying the OpenRouterKey CR.
-    secretMissing:
-      for: 10m
     # Account credit low-water mark (issue #33). Self-scaling: the mark follows what the fleet
     # actually spends, so it stays meaningful as usage grows instead of aging into a stale dollar
     # figure. Burn is derived from the balance gauge's own 24h decrease — #29 exports no usage

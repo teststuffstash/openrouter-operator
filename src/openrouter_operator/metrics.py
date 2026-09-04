@@ -66,7 +66,7 @@ class KeyOpMetrics:
         self._today: dict[str, int] = dict.fromkeys(KEY_OPS, 0)
         self._rate_limited: dict[str, int] = dict.fromkeys(LIMIT_CLASSES, 0)
         self._day: date | None = None
-        self._secret_missing: int = 0
+        self._missing_secrets: set[str] = set()
 
     def record(self, op: str, now: datetime) -> None:
         """Count one key-API request — issued, not necessarily successful: a 429'd request still
@@ -82,13 +82,13 @@ class KeyOpMetrics:
         parked = isinstance(decide_retry(limit_name, now), ParkUntilReset)
         self._rate_limited["daily" if parked else "other"] += 1
 
-    def record_secret_missing(self) -> None:
-        """Mark that at least one Secret is missing (gauge goes to 1)."""
-        self._secret_missing = 1
+    def record_secret_missing(self, secret_name: str) -> None:
+        """Track that a Secret is missing — gauge counts currently-missing Secrets."""
+        self._missing_secrets.add(secret_name)
 
-    def record_secret_found(self) -> None:
-        """Mark that no Secret is missing (gauge goes to 0)."""
-        self._secret_missing = 0
+    def record_secret_found(self, secret_name: str) -> None:
+        """Track that a Secret is no longer missing — gauge counts currently-missing Secrets."""
+        self._missing_secrets.discard(secret_name)
 
     def ops_today(self, now: datetime) -> int:
         self._roll(now)
@@ -119,10 +119,10 @@ class KeyOpMetrics:
             ),
         ]
         lines += [
-            "# HELP openrouter_secret_missing 1 when the k8s Secret for a healthy upstream key is "
-            "absent (deleted out of band); 0 when all Secrets are present (issue #56).",
+            "# HELP openrouter_secret_missing Number of k8s Secrets for healthy upstream keys that "
+            "are absent (deleted out of band); 0 when all Secrets are present (issue #56).",
             "# TYPE openrouter_secret_missing gauge",
-            f"openrouter_secret_missing {self._secret_missing}",
+            f"openrouter_secret_missing {len(self._missing_secrets)}",
         ]
         return "\n".join(lines) + "\n" + self.account.render()
 

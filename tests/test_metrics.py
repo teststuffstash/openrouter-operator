@@ -372,3 +372,28 @@ def test_a_fresh_instance_exposes_the_balance_series_for_the_chart_guard() -> No
 )
 def test_credit_poll_interval(description: str, raw: str | None, expected: float) -> None:
     assert credit_poll_interval_s(raw) == expected, description
+
+
+# ── SecretMissing gauge (issue #56) ────────────────────────────────────────────────────────────
+
+
+def test_secret_missing_gauge_starts_at_zero() -> None:
+    """The gauge is 0 from t0 — no Secret is missing until the operator says otherwise."""
+    metrics = KeyOpMetrics()
+    rendered = metrics.render(_D29_EVENING)
+    assert "\nopenrouter_secret_missing 0\n" in f"\n{rendered}"
+
+
+def test_record_secret_missing_sets_gauge_to_one() -> None:
+    metrics = KeyOpMetrics()
+    metrics.record_secret_missing()
+    rendered = metrics.render(_D29_EVENING)
+    assert "\nopenrouter_secret_missing 1\n" in f"\n{rendered}"
+
+
+def test_record_secret_found_resets_gauge_to_zero() -> None:
+    metrics = KeyOpMetrics()
+    metrics.record_secret_missing()
+    metrics.record_secret_found()
+    rendered = metrics.render(_D29_EVENING)
+    assert "\nopenrouter_secret_missing 0\n" in f"\n{rendered}"

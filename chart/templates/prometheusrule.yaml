@@ -50,6 +50,25 @@ spec:
               {{ $rpd.ceiling }}/day `keys-modify-api-rpd-v2` ceiling. Once that ceiling is reached
               every mint, budget patch and delete is rejected until the next UTC midnight: new
               OpenRouterKey resources stall unminted and deleted ones wedge on their finalizers.
+    - name: openrouter-operator.secret
+      rules:
+        - alert: OpenRouterKeySecretMissing
+          # The operator sets openrouter_secret_missing to 1 when the k8s Secret for a healthy
+          # upstream key is absent (deleted out of band). The gauge is 0 when all Secrets are
+          # present. A human re-mints by deleting and re-applying the OpenRouterKey CR.
+          expr: openrouter_secret_missing == 1
+          for: {{ .Values.metrics.prometheusRule.secretMissing.for }}
+          labels:
+            severity: warning
+            triage: none
+          annotations:
+            summary: k8s Secret for an OpenRouter key is missing
+            description: >-
+              The k8s Secret holding the OpenRouter key value is absent (deleted out of band),
+              but the upstream key is healthy. The operator cannot recover the key value (it is
+              only returned once at mint time) and must not re-mint unattended — re-minting would
+              delete the live fleet credential. Delete and re-apply the OpenRouterKey CR to
+              re-mint.
     - name: openrouter-operator.account
       rules:
         - alert: OpenRouterAccountCreditNearlyExhausted

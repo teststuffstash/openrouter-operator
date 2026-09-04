@@ -161,8 +161,8 @@ def decide(
         # Secret is missing entirely — we cannot recover the key value (it is only returned
         # once at mint time), and re-minting would delete a live, healthy fleet credential
         # (the old key is deleted on Rotate by default). Leave the upstream key alone and
-        # surface the gap; the missing-Secret design (re-mint vs surface) is issue #56.
-        return NoOp()
+        # surface the gap as a status condition + metric (issue #56).
+        return SecretMissing(secret_name=desired.name)
     if not secret.has_label or not secret.has_all_keys:
         # Secret exists but is unlabeled or shape-drifted — read the existing value and
         # rewrite it with correct labels and data keys.

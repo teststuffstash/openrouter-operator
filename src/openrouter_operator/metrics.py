@@ -66,6 +66,7 @@ class KeyOpMetrics:
         self._today: dict[str, int] = dict.fromkeys(KEY_OPS, 0)
         self._rate_limited: dict[str, int] = dict.fromkeys(LIMIT_CLASSES, 0)
         self._day: date | None = None
+        self._missing_secrets: set[str] = set()
 
     def record(self, op: str, now: datetime) -> None:
         """Count one key-API request — issued, not necessarily successful: a 429'd request still
@@ -80,6 +81,14 @@ class KeyOpMetrics:
         self._roll(now)
         parked = isinstance(decide_retry(limit_name, now), ParkUntilReset)
         self._rate_limited["daily" if parked else "other"] += 1
+
+    def record_secret_missing(self, secret_name: str) -> None:
+        """Track that a Secret is missing — gauge counts currently-missing Secrets."""
+        self._missing_secrets.add(secret_name)
+
+    def record_secret_found(self, secret_name: str) -> None:
+        """Track that a Secret is no longer missing — gauge counts currently-missing Secrets."""
+        self._missing_secrets.discard(secret_name)
 
     def ops_today(self, now: datetime) -> int:
         self._roll(now)
@@ -108,6 +117,12 @@ class KeyOpMetrics:
                 f"{self._rate_limited[cls]}"
                 for cls in LIMIT_CLASSES
             ),
+        ]
+        lines += [
+            "# HELP openrouter_secret_missing Number of k8s Secrets for healthy upstream keys that "
+            "are absent (deleted out of band); 0 when all Secrets are present (issue #56).",
+            "# TYPE openrouter_secret_missing gauge",
+            f"openrouter_secret_missing {len(self._missing_secrets)}",
         ]
         return "\n".join(lines) + "\n" + self.account.render()
 

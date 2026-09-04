@@ -29,6 +29,7 @@ from openrouter_operator.reconcile import (
     Plan,
     RetryPlan,
     Rotate,
+    SecretMissing,
     Update,
     decide,
     decide_retry,
@@ -87,10 +88,10 @@ def _secret_shape_drifted() -> SecretState:
         # A missing Secret cannot be normalized (key value is only known at mint time),
         # so it must rotate to mint a fresh key + write the Secret.
         (
-            "Secret missing, key healthy -> noop (cannot recover value; issue #56)",
+            "Secret missing, key healthy -> SecretMissing (surface, #56)",
             _state(),
             _secret_missing(),
-            NoOp,
+            SecretMissing,
         ),
         (
             "Secret unlabeled, key healthy -> normalize",
@@ -109,12 +110,14 @@ def _secret_shape_drifted() -> SecretState:
 def test_decide(
     description: str, observed: KeyState | None, secret: SecretState, expected: type[Plan]
 ) -> None:
-    plan = decide(DESIRED, observed, secret, NOW)
+    plan = decide(DESIRED, observed, secret, NOW, secret_name="sleep-tracking-openrouter")
     assert isinstance(plan, expected), description
     if isinstance(plan, Update):
         assert observed is not None
         assert plan.key_hash == observed.hash
         assert plan.desired == DESIRED
+    if isinstance(plan, SecretMissing):
+        assert plan.secret_name == "sleep-tracking-openrouter", description
 
 
 def test_desired_from_spec_maps_fields() -> None:
@@ -250,10 +253,10 @@ _EXTENDED = datetime(2026, 6, 29, 14, 0, tzinfo=UTC)  # live key already lasts L
         # A missing Secret cannot be normalized (key value is only known at mint time),
         # so it must rotate to mint a fresh key + write the Secret.
         (
-            "session key healthy, Secret missing -> noop (cannot recover value; issue #56)",
+            "session key healthy, Secret missing -> SecretMissing (surface, #56)",
             _eph_state(expires_at=_DESIRED_EXP_STORED),
             _secret_missing(),
-            NoOp,
+            SecretMissing,
         ),
         (
             "session key healthy, Secret unlabeled -> normalize",
@@ -272,8 +275,16 @@ _EXTENDED = datetime(2026, 6, 29, 14, 0, tzinfo=UTC)  # live key already lasts L
 def test_decide_ephemeral(
     description: str, observed: KeyState | None, secret: SecretState, expected: type[Plan]
 ) -> None:
-    plan = decide(EPHEMERAL_DESIRED, observed, secret, NOW)
+    plan = decide(
+        EPHEMERAL_DESIRED,
+        observed,
+        secret,
+        NOW,
+        secret_name="sleep-tracking-session-issue-42-round-1-openrouter",
+    )
     assert isinstance(plan, expected), description
+    if isinstance(plan, SecretMissing):
+        assert plan.secret_name == "sleep-tracking-session-issue-42-round-1-openrouter", description
 
 
 def test_rotate_skipped_when_desired_expiry_already_past() -> None:
@@ -282,16 +293,20 @@ def test_rotate_skipped_when_desired_expiry_already_past() -> None:
     # renewal window, so the age decision answers this instead — and answers it the same way,
     # because the live key (12:30) is nowhere near its own expiry at 11:00. NoOp either way.
     stale = Desired(name="x", limit=0.5, reset_interval=None, expires_at=_PAST)
-    assert isinstance(decide(stale, _eph_state(expires_at=_FUTURE), _secret_ok(), NOW), NoOp)
+    assert isinstance(
+        decide(stale, _eph_state(expires_at=_FUTURE), _secret_ok(), NOW, secret_name="x"), NoOp
+    )
 
 
 def test_decide_skips_born_dead_remint() -> None:
     # dead key AND the spec's own expiresAt is already past → a re-mint would be born-dead and
     # hot-loop, so NoOp and wait for a fresh CR (new round) instead.
     stale = Desired(name="x", limit=0.5, reset_interval=None, expires_at=_PAST)
-    assert isinstance(decide(stale, _eph_state(expires_at=_PAST), _secret_ok(), NOW), NoOp)
+    assert isinstance(
+        decide(stale, _eph_state(expires_at=_PAST), _secret_ok(), NOW, secret_name="x"), NoOp
+    )
     # never minted + already-past spec -> NoOp
-    assert isinstance(decide(stale, None, _secret_ok(), NOW), NoOp)
+    assert isinstance(decide(stale, None, _secret_ok(), NOW, secret_name="x"), NoOp)
 
 
 def test_ephemeral_desired_and_helpers() -> None:
@@ -450,7 +465,7 @@ def test_decide_renews_before_age_death(
     expected_limit: float | None,
     deletes_old: bool,
 ) -> None:
-    plan = decide(desired, observed, _secret_ok(), now)
+    plan = decide(desired, observed, _secret_ok(), now, secret_name="x")
     assert isinstance(plan, expected), description
     if isinstance(plan, Rotate):
         assert plan.key_hash == observed.hash, description
@@ -480,6 +495,7 @@ def test_renewal_chain_caps_total_spend_across_rotations() -> None:
             _eph_state(limit=limit, expires_at=expires, usage=burn_per_key),
             _secret_ok(),
             now,
+            secret_name="x",
         )
         assert isinstance(plan, Rotate) and plan.delete_old is False
         renewed = plan.desired
@@ -495,6 +511,7 @@ def test_renewal_chain_caps_total_spend_across_rotations() -> None:
         _eph_state(limit=limit, expires_at=expires, usage=limit),
         _secret_ok(),
         expires - timedelta(minutes=10),
+        secret_name="x",
     )
     assert isinstance(last, NoOp)
 

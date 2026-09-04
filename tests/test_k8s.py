@@ -171,6 +171,33 @@ def test_write_key_secret_logs_when_owner_references_skipped(
     assert any(expected_msg in record.message for record in caplog.records)
 
 
+def test_read_key_secret_raises_on_non_404(mock_core_v1: MagicMock) -> None:
+    """A non-404 ApiException from read_key_secret must raise, not return None.
+
+    This locks in the absent-vs-unknown property (issue #56): a transient API failure must
+    propagate to kopf and retry, never surface as exists=False which would make an unknown
+    Secret actionable. A later refactor that broadens the except cannot quietly change this.
+    """
+    mock_core_v1.read_namespaced_secret.side_effect = client.ApiException(status=500)
+
+    with pytest.raises(client.ApiException) as exc_info:
+        from openrouter_operator.k8s import read_key_secret
+
+        read_key_secret(namespace="default", name="my-secret")
+
+    assert exc_info.value.status == 500
+
+
+def test_read_key_secret_returns_none_on_404(mock_core_v1: MagicMock) -> None:
+    """A 404 from read_key_secret returns None — the Secret is genuinely absent."""
+    mock_core_v1.read_namespaced_secret.side_effect = client.ApiException(status=404)
+
+    from openrouter_operator.k8s import read_key_secret
+
+    result = read_key_secret(namespace="default", name="my-secret")
+    assert result is None
+
+
 def test_write_key_secret_logs_when_owner_name_missing(
     mock_core_v1: MagicMock, caplog: pytest.LogCaptureFixture
 ) -> None:

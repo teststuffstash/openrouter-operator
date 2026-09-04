@@ -372,3 +372,48 @@ def test_a_fresh_instance_exposes_the_balance_series_for_the_chart_guard() -> No
 )
 def test_credit_poll_interval(description: str, raw: str | None, expected: float) -> None:
     assert credit_poll_interval_s(raw) == expected, description
+
+
+# ── SecretMissing gauge (issue #56) ────────────────────────────────────────────────────────────
+
+
+def test_secret_missing_gauge_starts_at_zero() -> None:
+    """The gauge is 0 from t0 — no Secret is missing until the operator says otherwise."""
+    metrics = KeyOpMetrics()
+    rendered = metrics.render(_D29_EVENING)
+    assert "\nopenrouter_secret_missing 0\n" in f"\n{rendered}"
+
+
+def test_record_secret_missing_sets_gauge_to_one() -> None:
+    metrics = KeyOpMetrics()
+    metrics.record_secret_missing("cr-a-secret")
+    rendered = metrics.render(_D29_EVENING)
+    assert "\nopenrouter_secret_missing 1\n" in f"\n{rendered}"
+
+
+def test_record_secret_found_resets_gauge_to_zero() -> None:
+    metrics = KeyOpMetrics()
+    metrics.record_secret_missing("cr-a-secret")
+    metrics.record_secret_found("cr-a-secret")
+    rendered = metrics.render(_D29_EVENING)
+    assert "\nopenrouter_secret_missing 0\n" in f"\n{rendered}"
+
+
+def test_secret_missing_tracks_per_name_not_global_flip_flop() -> None:
+    """CR-A's Secret is missing, then CR-B (a different, healthy Secret) reconciles NoOp and
+    calls record_secret_found for its own name — the gauge must STILL be 1 because CR-A's
+    Secret is still missing. This is the exact fleet scenario that motivated issue #56."""
+    metrics = KeyOpMetrics()
+    metrics.record_secret_missing("cr-a-secret")
+    metrics.record_secret_found("cr-b-secret")  # CR-B is healthy; must not clear CR-A's flag
+    rendered = metrics.render(_D29_EVENING)
+    assert "\nopenrouter_secret_missing 1\n" in f"\n{rendered}"
+
+
+def test_two_secrets_missing_shows_count_of_two() -> None:
+    """When two Secrets are missing at once, the gauge shows 2 — honest, not a 0/1 bool."""
+    metrics = KeyOpMetrics()
+    metrics.record_secret_missing("cr-a-secret")
+    metrics.record_secret_missing("cr-b-secret")
+    rendered = metrics.render(_D29_EVENING)
+    assert "\nopenrouter_secret_missing 2\n" in f"\n{rendered}"

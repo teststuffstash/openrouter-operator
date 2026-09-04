@@ -70,16 +70,25 @@ class NormalizeSecret:
     The operator should read the existing Secret value and rewrite it with correct labels and
     data keys (OPENROUTER_API_KEY, KEY_HASH, GUARDRAIL) via `write_key_secret()`. Idempotent:
     the key value itself is only known at mint, so a wrong-VALUE Secret still needs a Rotate.
-
-    NOTE: a MISSING Secret returns `NoOp` instead — the key value is only returned once at
-    mint time, so we cannot recover it without minting a fresh key. The missing-Secret
-    design (re-mint vs surface) is issue #56.
     """
 
     pass
 
 
-Plan = Create | Update | Rotate | NoOp | NormalizeSecret
+@dataclass(frozen=True)
+class SecretMissing:
+    """The upstream key is healthy, but the k8s Secret is absent (deleted out of band).
+
+    The key value is only returned once at mint time, so we cannot recover it without minting
+    a fresh key — and re-minting would delete a live, healthy fleet credential (the old key is
+    deleted on Rotate by default). The operator surfaces this as a status condition on the CR
+    and a Prometheus metric; a human re-mints by deleting and re-applying the CR.
+    """
+
+    secret_name: str
+
+
+Plan = Create | Update | Rotate | NoOp | NormalizeSecret | SecretMissing
 
 # OpenRouter stores a requested expiry rounded by a few seconds (a key minted for 18:40:10 reads
 # back 18:40:08) — strict equality would rotate every reconcile, forever. Anything inside this

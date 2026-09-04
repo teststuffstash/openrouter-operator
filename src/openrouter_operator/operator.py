@@ -169,7 +169,13 @@ def _reconcile(
             secret_raw and REQUIRED_DATA_KEYS.issubset(secret_raw.get("data", {}).keys())
         ),
     )
-    plan = decide(desired, observed, secret_state, datetime.now(UTC))
+    plan = decide(
+        desired,
+        observed,
+        secret_state,
+        datetime.now(UTC),
+        secret_name=parsed.target_secret_name(),
+    )
 
     if isinstance(plan, Create):
         minted = port.create_key(

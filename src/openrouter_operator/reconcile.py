@@ -121,7 +121,12 @@ def desired_from_spec(spec: OpenRouterKeySpec) -> Desired:
 
 
 def decide(
-    desired: Desired, observed: KeyState | None, secret: SecretState | None, now: datetime
+    desired: Desired,
+    observed: KeyState | None,
+    secret: SecretState | None,
+    now: datetime,
+    *,
+    secret_name: str,
 ) -> Plan:
     """Decide the action to reconcile `observed` toward `desired`.
 
@@ -162,7 +167,7 @@ def decide(
         # once at mint time), and re-minting would delete a live, healthy fleet credential
         # (the old key is deleted on Rotate by default). Leave the upstream key alone and
         # surface the gap as a status condition + metric (issue #56).
-        return SecretMissing(secret_name=desired.name)
+        return SecretMissing(secret_name=secret_name)
     if not secret.has_label or not secret.has_all_keys:
         # Secret exists but is unlabeled or shape-drifted — read the existing value and
         # rewrite it with correct labels and data keys.

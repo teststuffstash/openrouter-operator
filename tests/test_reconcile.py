@@ -62,19 +62,25 @@ def _state(
 
 def _secret_ok() -> SecretState:
     """A healthy Secret: exists, labeled, all three data keys present."""
-    return SecretState(exists=True, has_label=True, has_all_keys=True)
+    return SecretState(exists=True, has_label=True, has_all_keys=True, has_openrouter_key=True)
 
 
 def _secret_missing() -> SecretState:
-    return SecretState(exists=False, has_label=False, has_all_keys=False)
+    return SecretState(exists=False, has_label=False, has_all_keys=False, has_openrouter_key=False)
 
 
 def _secret_unlabeled() -> SecretState:
-    return SecretState(exists=True, has_label=False, has_all_keys=True)
+    return SecretState(exists=True, has_label=False, has_all_keys=True, has_openrouter_key=True)
 
 
 def _secret_shape_drifted() -> SecretState:
-    return SecretState(exists=True, has_label=True, has_all_keys=False)
+    """Secret exists, has label, but missing metadata keys (KEY_HASH/GUARDRAIL), value present."""
+    return SecretState(exists=True, has_label=True, has_all_keys=False, has_openrouter_key=True)
+
+
+def _secret_value_key_missing() -> SecretState:
+    """Secret exists, has label, has metadata keys, but OPENROUTER_API_KEY is missing."""
+    return SecretState(exists=True, has_label=True, has_all_keys=False, has_openrouter_key=False)
 
 
 @pytest.mark.parametrize(
@@ -105,6 +111,12 @@ def _secret_shape_drifted() -> SecretState:
             _state(),
             _secret_shape_drifted(),
             NormalizeSecret,
+        ),
+        (
+            "Secret exists, OPENROUTER_API_KEY absent, key healthy -> SecretMissing (#58)",
+            _state(),
+            _secret_value_key_missing(),
+            SecretMissing,
         ),
     ],
 )
@@ -271,6 +283,12 @@ _EXTENDED = datetime(2026, 6, 29, 14, 0, tzinfo=UTC)  # live key already lasts L
             _eph_state(expires_at=_DESIRED_EXP_STORED),
             _secret_shape_drifted(),
             NormalizeSecret,
+        ),
+        (
+            "session key healthy, Secret missing OPENROUTER_API_KEY -> SecretMissing (#58)",
+            _eph_state(expires_at=_DESIRED_EXP_STORED),
+            _secret_value_key_missing(),
+            SecretMissing,
         ),
     ],
 )

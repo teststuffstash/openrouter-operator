@@ -73,11 +73,15 @@ class SecretState:
     `has_label` is True when the Secret carries the `openrouter.teststuff.net/session-key` label.
     `has_all_keys` is True when the Secret has all three data keys: OPENROUTER_API_KEY, KEY_HASH,
     GUARDRAIL — a legacy/adopted Secret with only the first key is shape-drifted.
+    `has_openrouter_key` is True when the Secret has OPENROUTER_API_KEY specifically; when False,
+    the credential is unrecoverable (the value is only known at mint time) and must be treated as
+    SecretMissing rather than normalized (issue #58).
     """
 
     exists: bool
     has_label: bool
     has_all_keys: bool
+    has_openrouter_key: bool
 
 
 @dataclass(frozen=True)

@@ -168,6 +168,7 @@ def _reconcile(
         has_all_keys=bool(
             secret_raw and REQUIRED_DATA_KEYS.issubset(secret_raw.get("data", {}).keys())
         ),
+        has_openrouter_key=bool(secret_raw and "OPENROUTER_API_KEY" in secret_raw.get("data", {})),
     )
     plan = decide(
         desired,

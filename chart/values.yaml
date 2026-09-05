@@ -64,3 +64,8 @@ metrics:
       # Longer than the key-ops alert: ~2 days of runway is not a fast-moving symptom, and the
       # balance only refreshes every 300s, so a short window would just flap on the threshold.
       for: 30m
+    # Missing Secret alert for healthy upstream keys (issue #60). A k8s Secret deletion out of
+    # band is the failure mode. The remedy is operator action: re-create the Secret or unmint
+    # the OpenRouterKey CR.
+    secretMissing:
+      for: 10m

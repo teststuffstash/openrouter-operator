@@ -1,6 +1,7 @@
 {{- if and .Values.metrics.enabled .Values.metrics.prometheusRule.enabled }}
 {{- $rpd := .Values.metrics.prometheusRule.keyOpsPerDay }}
 {{- $bal := .Values.metrics.prometheusRule.accountBalance }}
+{{- $sec := .Values.metrics.prometheusRule.secretMissing }}
 # Alert rules for the two exhaustions that stacked in the 2026-08-08 fleet stall (issue #27,
 # deliverable 3): the key-management API's daily op budget, and the account credit those keys
 # spend out of. One group each — they are different subsystems with different remedies (wait out
@@ -95,4 +96,24 @@ spec:
               request the minted keys make is rejected while the operator keeps reconciling and the
               OpenRouterKey resources keep reporting healthy — the keys still exist, only the
               traffic through them fails. Top up the account; no code change fixes this.
+    - name: openrouter-operator.secret
+      rules:
+        - alert: OpenRouterKeySecretMissing
+          # The gauge counts currently-missing k8s Secrets for healthy upstream keys. It is a
+          # count, not a boolean, so the expr must be `> 0` (not `== 1`) — a `== 1` would silently
+          # stop firing the moment two Secrets are missing at once. Issue #60 split this from PR #59
+          # round 1, which had the wrong expr before it was reverted.
+          expr: openrouter_secret_missing > 0
+          for: {{ $sec.for }}
+          labels:
+            severity: warning # never `info`: the stock InfoInhibitor silently suppresses those
+            # standing/capacity fact — the remedy is operator action (re-create the Secret or
+            # unmint the CR), never a code change (precedent: SubscriptionDispatchLimited).
+            triage: none
+          annotations:
+            summary: OpenRouter key Secret is missing
+            description: >-
+              A k8s Secret for a healthy upstream OpenRouter key is absent (deleted out of band).
+              The key value is unrecoverable. Re-create the Secret or unmint the OpenRouterKey CR
+              by deleting it and re-applying — the operator will provision a fresh key.
 {{- end }}

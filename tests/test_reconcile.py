@@ -92,7 +92,8 @@ def _secret_value_key_missing() -> SecretState:
         ("reset drift -> update", _state(reset=ResetInterval.monthly), _secret_ok(), Update),
         # Secret drift (issue #53): upstream key healthy, but the k8s Secret is wrong
         # A missing Secret cannot be normalized (key value is only known at mint time),
-        # so it must rotate to mint a fresh key + write the Secret.
+        # so decide() returns the SecretMissing plan, which surfaces the unrecoverable state
+        # (status condition + Prometheus metric) rather than acting on it (#56).
         (
             "Secret missing, key healthy -> SecretMissing (surface, #56)",
             _state(),
@@ -263,7 +264,8 @@ _EXTENDED = datetime(2026, 6, 29, 14, 0, tzinfo=UTC)  # live key already lasts L
         ),
         # Secret drift on ephemeral keys (issue #53)
         # A missing Secret cannot be normalized (key value is only known at mint time),
-        # so it must rotate to mint a fresh key + write the Secret.
+        # so decide() returns the SecretMissing plan, which surfaces the unrecoverable state
+        # (status condition + Prometheus metric) rather than acting on it (#56).
         (
             "session key healthy, Secret missing -> SecretMissing (surface, #56)",
             _eph_state(expires_at=_DESIRED_EXP_STORED),

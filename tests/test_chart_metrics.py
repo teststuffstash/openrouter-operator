@@ -186,6 +186,34 @@ def rendered() -> list[dict[str, Any]]:
             ("spec", "groups", 1, "rules", 0, "labels", "triage"),
             "none",
         ),
+        # -- deliverable 4: the missing-secret alert (issue #60) -----
+        # Its own group: a missing k8s Secret for a healthy upstream key is a distinct subsystem
+        # failure (not an op budget or account credit issue), and the remedy is operator action
+        # (unmint the CR or surface the Secret).
+        (
+            "secret-rule-group-is-named-by-subsystem",
+            "PrometheusRule",
+            ("spec", "groups", 2, "name"),
+            "openrouter-operator.secret",
+        ),
+        (
+            "secret-alert-names-the-symptom",
+            "PrometheusRule",
+            ("spec", "groups", 2, "rules", 0, "alert"),
+            "OpenRouterKeySecretMissing",
+        ),
+        (
+            "secret-alert-severity-is-warning-never-info",
+            "PrometheusRule",
+            ("spec", "groups", 2, "rules", 0, "labels", "severity"),
+            "warning",
+        ),
+        (
+            "secret-alert-is-marked-no-agent-triage",
+            "PrometheusRule",
+            ("spec", "groups", 2, "rules", 0, "labels", "triage"),
+            "none",
+        ),
     ],
 )
 def test_rendered_manifest_field(
@@ -295,6 +323,45 @@ def test_balance_alert_survives_the_ways_it_could_silently_never_fire(
 def test_balance_alert_mark_is_derived_from_values(case: str, setting: str, fragment: str) -> None:
     docs = _helm_template(f"metrics.prometheusRule.accountBalance.{setting}")
     assert fragment in _expr(docs, _BALANCE_ALERT), case
+
+
+_SECRET_ALERT = "OpenRouterKeySecretMissing"
+
+
+@pytest.mark.parametrize(
+    ("case", "fragment"),
+    [
+        # The gauge is `len(_missing_secrets)` — a count of currently-missing Secret names, not a
+        # boolean. An expression of `== 1` would silently stop firing the moment two Secrets are
+        # missing at once (the exact bug round 1 of PR #59 had before it was reverted).
+        (
+            "alert fires when any Secret is missing",
+            "openrouter_secret_missing > 0",
+        ),
+    ],
+)
+def test_secret_alert_expr_matches_gauge_semantics(
+    rendered: list[dict[str, Any]], case: str, fragment: str
+) -> None:
+    assert fragment in _expr(rendered, _SECRET_ALERT), case
+
+
+def test_secret_alert_for_is_configurable(rendered: list[dict[str, Any]]) -> None:
+    """The `for:` window is configurable and defaults to 10m."""
+    rules = _alert_rules(rendered)
+    secret_rule = [r for r in rules if r["alert"] == _SECRET_ALERT][0]
+    assert secret_rule["for"] == "10m", f"default for: {secret_rule['for']}"
+
+
+@pytest.mark.parametrize(
+    ("for_value",),
+    [("5m",), ("30m",), ("60m",)],
+)
+def test_secret_alert_for_window_is_derived_from_values(for_value: str) -> None:
+    docs = _helm_template(f"metrics.prometheusRule.secretMissing.for={for_value}")
+    rules = _alert_rules(docs)
+    secret_rule = [r for r in rules if r["alert"] == _SECRET_ALERT][0]
+    assert secret_rule["for"] == for_value, f"for: {secret_rule['for']}"
 
 
 def test_every_alert_has_a_series_behind_it(rendered: list[dict[str, Any]]) -> None:

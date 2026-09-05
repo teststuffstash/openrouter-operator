@@ -57,13 +57,14 @@ to create the first provisioning key:
 | `metrics.prometheusRule.accountBalance.floorUsd` | `5` | **placeholder** — absolute floor under the self-scaling mark (see below) |
 | `metrics.prometheusRule.accountBalance.maxStalenessSeconds` | `3600` | how old the last successful credits poll may be before the alert goes quiet |
 | `metrics.prometheusRule.accountBalance.for` | `30m` | how long the threshold must hold |
+| `metrics.prometheusRule.secretMissing.for` | `10m` | how long the threshold must hold |
 
 ### Monitoring
 
 The operator exports key-API op counters (`openrouter_key_api_ops_today`, `…_ops_total`,
 `…_rate_limited_total`) and the account credit balance (`openrouter_account_credit_usd`,
 `…_updated_timestamp_seconds`, `…_poll_failures_total`) on `:9090/metrics`. The chart ships the
-Service, ServiceMonitor and two alerts — one per way the account can run out:
+Service, ServiceMonitor and three alerts:
 
 - **`OpenRouterKeyOpsDailyBudgetNearlyExhausted`** — the *modify* ops (mint, budget patch, delete)
   issued in the current UTC day pass `warnAtPercent` of the daily ceiling. Past that ceiling every
@@ -73,6 +74,9 @@ Service, ServiceMonitor and two alerts — one per way the account can run out:
   of its own trailing-24h burn, or below `floorUsd`, whichever is higher. At zero the keys still
   exist and the CRs still report healthy — only the traffic through them fails, which is why this
   needs an alert of its own rather than showing up in reconcile status.
+- **`OpenRouterKeySecretMissing`** — the k8s Secret backing an `OpenRouterKey` CR has been deleted
+  out of band. The key value itself is unrecoverable; a human remints by deleting and re-applying
+  the CR.
 
 **Set the ceiling for your account.** OpenRouter does not publish the `keys-modify-api-rpd-v2`
 limit and it varies per account, so `1000` is a placeholder. Read the real value from the

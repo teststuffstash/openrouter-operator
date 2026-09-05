@@ -81,7 +81,7 @@ class SecretState:
     exists: bool
     has_label: bool
     has_all_keys: bool
-    has_openrouter_key: bool = True
+    has_openrouter_key: bool
 
 
 @dataclass(frozen=True)

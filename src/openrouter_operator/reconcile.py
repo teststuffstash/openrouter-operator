@@ -169,8 +169,12 @@ def decide(
         # surface the gap as a status condition + metric (issue #56).
         return SecretMissing(secret_name=secret_name)
     if not secret.has_label or not secret.has_all_keys:
-        # Secret exists but is unlabeled or shape-drifted — read the existing value and
-        # rewrite it with correct labels and data keys.
+        # Secret exists but is unlabeled or shape-drifted. The value key is unrecoverable
+        # (only known at mint time), so distinguish it from metadata-key drift (issue #58).
+        if not secret.has_openrouter_key:
+            return SecretMissing(secret_name=secret_name)
+        # Secret exists but is missing only metadata keys or the label — read the existing
+        # value and rewrite it with correct labels and data keys.
         return NormalizeSecret()
 
     return NoOp()

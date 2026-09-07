@@ -5,8 +5,12 @@
 set -euo pipefail
 export UV_LINK_MODE=copy # the jail's /nix bind-mount can't hardlink; copy avoids a noisy warning
 
-echo "==> uv sync"
-uv sync
+echo "==> uv sync (frozen)"
+# --frozen: install exactly what uv.lock pins and FAIL if pyproject.toml has drifted from it,
+# rather than silently re-resolving and rewriting the committed lock mid-CI. A committed lock
+# whose CI does not enforce it is not a lock. Matches oracle-fleet and sleep-tracking; the
+# contract is homelab docs/patterns/python-stack.md ("What a Python stack must do", item 3).
+uv sync --frozen
 
 echo "==> ruff check"
 uv run ruff check

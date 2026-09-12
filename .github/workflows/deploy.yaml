@@ -33,7 +33,7 @@ jobs:
       contents: read
       packages: write # push image + chart to ghcr via GITHUB_TOKEN
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -50,7 +50,7 @@ jobs:
           echo "version=${DATE}-g${SHA}" >> "$GITHUB_OUTPUT"
           echo "→ deploying ${DATE}-g${SHA}"
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -74,7 +74,7 @@ jobs:
       # cross-repo: mint a short-lived token scoped to HOMELAB, then open the deploy-pin PR with devbox's gh.
       - name: Mint homelab token
         id: hl
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
         with:
           app-id: ${{ secrets.DEPLOY_APP_ID }}
           private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}

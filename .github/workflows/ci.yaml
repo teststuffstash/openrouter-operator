@@ -20,7 +20,7 @@ jobs:
   ci:
     runs-on: homelab-ephemeral
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # No toolchain install: the ARC runner image bakes single-user Nix + devbox + the LAN
       # nix substituter (homelab docker/arc-runner/, FU-015).

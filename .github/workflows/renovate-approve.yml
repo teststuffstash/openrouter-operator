@@ -7,5 +7,5 @@ on:
 permissions: {}
 jobs:
   approve:
-    uses: teststuffstash/homelab/.github/workflows/renovate-approve.reusable.yml@master
+    uses: teststuffstash/homelab/.github/workflows/renovate-approve.reusable.yml@d17610bd2682ea54f55fd71f029164cb3206cfbe # master
     secrets: inherit

@@ -74,7 +74,7 @@ jobs:
       # cross-repo: mint a short-lived token scoped to HOMELAB, then open the deploy-pin PR with devbox's gh.
       - name: Mint homelab token
         id: hl
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           app-id: ${{ secrets.DEPLOY_APP_ID }}
           private-key: ${{ secrets.DEPLOY_APP_PRIVATE_KEY }}

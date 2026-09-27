@@ -13,7 +13,7 @@ from openrouter_operator.k8s import delete_key_secret, write_key_secret
 
 
 @pytest.fixture
-def mock_core_v1() -> Generator[MagicMock, None, None]:
+def mock_core_v1() -> Generator[MagicMock]:
     """Mock the CoreV1Api for testing."""
     with patch("openrouter_operator.k8s._core_v1") as mock_api:
         yield mock_api.return_value

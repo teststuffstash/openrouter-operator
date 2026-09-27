@@ -1,15 +1,33 @@
-# CODEOWNERS — PATH-TIERED since 2026-09-27 (homelab ADR-100 owner→rule replacement, ADR-141; S9 #1988).
-# The 2026-08-11 whole-repo `*` gate was "ahead of the bot-reviewer enable"; the reviewer is live
-# here (every Renovate PR since carries its verdict), so `*` only parked what the lanes already
-# gate: pre-commit hook bumps (#71/#73, `automerge`, CI-exercised), the python base-image minor
-# (#80, `deps-review`, reviewer APPROVED) — none mergeable without a human, none with anything a
-# human could add. What stays human is GOVERNANCE (the bot cannot gate its own rules): the
-# reviewer rubric, the workflow directory's non-pin edits (pin-only-lint in required `ci` owns
-# the pin bumps — un-owned below), the chart (the deploy surface), and this file. src/tests/
-# Dockerfile/pyproject/uv.lock ride bot review + required `ci` (deps-pin-guard is the carved-out
-# dep lane's replacement owner, 731e0e7); the image pin in homelab is FU-044's reversible class.
-/.github/            @RasmusSoot
+# Whole-repo human gate (2026-08-11, the reviewer-enable retrace). This repo builds the
+# openrouter-proxy/router — the fleet's egress, credential and budget chokepoint — so with the
+# platform stack's bot reviewer ON, a bot approval must never be able to auto-merge here alone:
+# every PR parks REVIEW_REQUIRED for the owner (the bot review is input, the human is the gate).
+# Enforced only together with require_code_owner_review=true (homelab tofu/github/variables.tf) —
+# without that ruleset flag this file is decorative, which is exactly the hole it closes.
+# Relaxation path, when wanted: carve unowned lanes per path (the agent-runtime pattern), never
+# by deleting the flag.
+* @RasmusSoot
+
+# ── Carve-outs (LAST match wins; a pattern with NO owner REMOVES ownership) ──────────────────
+# The dep-bump lane (Renovate + devbox-update): ownership REPLACED by scripts/deps-pin-guard.sh
+# inside the required `ci` check — a PR touching these may touch nothing else and only
+# version/hash lines. Keeps non-major bumps auto-merging on the bot approval.
+/devbox.json
+/devbox.lock
+# Renovate's pre-commit hook bumps (gitleaks, ruff-pre-commit): the org policy's mechanical
+# `automerge` lane (renovate-global.json — dev tooling, patch/minor). Owned, #71/#73 sat
+# REVIEW_REQUIRED for two days with the reviewer's APPROVED at head and nothing a human could add
+# (S9 #1988, 2026-09-27). The Dockerfile, src, pyproject/uv.lock stay under the whole-repo gate above.
+/.pre-commit-config.yaml
+# The ownership file owns itself (the first thing an agent could otherwise propose is its own
+# ungating).
+/CODEOWNERS @RasmusSoot
+
+# ── Renovate's action-pin lane (homelab ADR-100 addendum / ADR-141, S9 #1990). Ownership is
+# REPLACED, not dropped: `pin-only-lint` (homelab scripts/pin-only-lint.sh, run inside the
+# required `ci` check) allows only verified action pin bumps (`uses: owner/repo@sha # tag`, the
+# SHA resolved upstream to the tag's commit, pairs only, first-party refs frozen) through a PR;
+# a real workflow edit takes the operator path straight to master, where the check does not run.
+# Post-merge failures of push-only workflows roll back via the FU-1990 chain (drill passed on
+# agent-coordinator, 2026-09-27). One-line revert: restore the owner below.
 /.github/workflows/
-/.agents/            @RasmusSoot
-/chart/              @RasmusSoot
-/CODEOWNERS          @RasmusSoot

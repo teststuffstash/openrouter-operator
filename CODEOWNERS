@@ -10,14 +10,23 @@
 
 # ── Carve-outs (LAST match wins; a pattern with NO owner REMOVES ownership) ──────────────────
 # The dep-bump lane (Renovate + devbox-update): ownership REPLACED by scripts/deps-pin-guard.sh
-# inside the required `ci` check — a PR touching these may touch nothing else and only
-# version/hash lines. Keeps non-major bumps auto-merging on the bot approval.
+# inside the required `ci` check — a PR touching these alone carries only version/hash lines
+# (a PR that also touches an OWNED path is the code owner's read, and the guard steps aside; a PR
+# mixing them with another un-owned lane is refused). Keeps non-major bumps auto-merging on the
+# bot approval.
 /devbox.json
 /devbox.lock
+# The Python dep lane (operator 2026-09-27, "extend deps-pin-guard to pyproject.toml and uv.lock,
+# then un-own them"): same replacement owner — deps-pin-guard in the required `ci` admits only
+# version constraints / resolver hashes of EXISTING packages (scripts/deps_pin_shape.py is the
+# contract; a new or removed package, requires-python, tool tables → refused → owned route). Renovate's
+# pep621/uv lanes (dev deps `automerge`, runtime deps `deps-review`) merge on the bot's approval.
+/pyproject.toml
+/uv.lock
 # Renovate's pre-commit hook bumps (gitleaks, ruff-pre-commit): the org policy's mechanical
 # `automerge` lane (renovate-global.json — dev tooling, patch/minor). Owned, #71/#73 sat
 # REVIEW_REQUIRED for two days with the reviewer's APPROVED at head and nothing a human could add
-# (S9 #1988, 2026-09-27). The Dockerfile, src, pyproject/uv.lock stay under the whole-repo gate above.
+# (S9 #1988, 2026-09-27). The Dockerfile and src stay under the whole-repo gate above.
 /.pre-commit-config.yaml
 # The ownership file owns itself (the first thing an agent could otherwise propose is its own
 # ungating).

@@ -12,7 +12,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, ParamSpec, TypeVar
+from typing import Any
 
 import kopf
 
@@ -47,9 +47,6 @@ GROUP = "openrouter.teststuff.net"
 VERSION = "v1alpha1"
 PLURAL = "openrouterkeys"
 
-P = ParamSpec("P")
-R = TypeVar("R")
-
 # Process-wide op counters (issue #26). Every port the handlers use is metered, so the daily
 # key-API spend is measured at the only place it can be spent.
 METRICS = KeyOpMetrics()
@@ -69,7 +66,7 @@ def _port() -> OpenRouterPort:
     return MeteredPort(OpenRouterAdapter(os.environ["OPENROUTER_MANAGEMENT_KEY"]), METRICS, _now)
 
 
-def _park_on_daily_limit(fn: Callable[P, R]) -> Callable[P, R]:
+def _park_on_daily_limit[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     """Turn an exhausted daily key-API budget into ONE parked retry (issue #26).
 
     kopf's default backoff hot-retries a `keys-modify-api-rpd-*` 429 that cannot clear before UTC

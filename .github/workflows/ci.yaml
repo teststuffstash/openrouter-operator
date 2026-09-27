@@ -38,3 +38,32 @@ jobs:
 
       - name: Secret scan (devbox run scan-secrets)
         run: devbox run scan-secrets
+
+      # pin-only-lint (homelab ADR-100 addendum, S9 #1990): the `.github/workflows` pin gate. Runs
+      # homelab's MASTER script (sparse checkout) — a fix there reaches every caller at once. The
+      # lint allows only verified action pin bumps (`uses: owner/repo@sha # tag`, SHA resolved
+      # upstream to the tag's commit) in workflow files; any other workflow edit takes the
+      # operator path to master, where this check does not run. This is what replaces the code
+      # owner on /.github/workflows/ (CODEOWNERS) — a rule stricter than the review it stands in for.
+      - name: Fetch homelab's pin-only-lint at master
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          repository: teststuffstash/homelab
+          ref: master
+          path: .homelab-lint
+          sparse-checkout: |
+            scripts/pin-only-lint.sh
+            devbox.json
+            devbox.lock
+          sparse-checkout-cone-mode: false
+
+      - name: Guarded files may only receive pin bumps (pin-only-lint)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PIN_ONLY_REPO: ${{ github.workspace }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          devbox run --config "$GITHUB_WORKSPACE/.homelab-lint" -- bash "$GITHUB_WORKSPACE/.homelab-lint/scripts/pin-only-lint.sh" "$BASE_SHA"

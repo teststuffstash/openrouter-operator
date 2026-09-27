@@ -1,7 +1,7 @@
 # Operator image — pure Python (kopf). Built amd64 on the homelab Proxmox VM runner (Docker),
 # pushed to ghcr. Installs runtime deps + the `sdk` extra (the official `openrouter` SDK) from the
 # lockfile, runs kopf against all namespaces with a liveness endpoint.
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 RUN pip install --no-cache-dir uv
 WORKDIR /app

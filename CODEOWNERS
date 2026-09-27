@@ -14,6 +14,20 @@
 # version/hash lines. Keeps non-major bumps auto-merging on the bot approval.
 /devbox.json
 /devbox.lock
+# Renovate's pre-commit hook bumps (gitleaks, ruff-pre-commit): the org policy's mechanical
+# `automerge` lane (renovate-global.json — dev tooling, patch/minor). Owned, #71/#73 sat
+# REVIEW_REQUIRED for two days with the reviewer's APPROVED at head and nothing a human could add
+# (S9 #1988, 2026-09-27). The Dockerfile, src, pyproject/uv.lock stay under the whole-repo gate above.
+/.pre-commit-config.yaml
 # The ownership file owns itself (the first thing an agent could otherwise propose is its own
 # ungating).
 /CODEOWNERS @RasmusSoot
+
+# ── Renovate's action-pin lane (homelab ADR-100 addendum / ADR-141, S9 #1990). Ownership is
+# REPLACED, not dropped: `pin-only-lint` (homelab scripts/pin-only-lint.sh, run inside the
+# required `ci` check) allows only verified action pin bumps (`uses: owner/repo@sha # tag`, the
+# SHA resolved upstream to the tag's commit, pairs only, first-party refs frozen) through a PR;
+# a real workflow edit takes the operator path straight to master, where the check does not run.
+# Post-merge failures of push-only workflows roll back via the FU-1990 chain (drill passed on
+# agent-coordinator, 2026-09-27). One-line revert: restore the owner below.
+/.github/workflows/

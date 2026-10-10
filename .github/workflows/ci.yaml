@@ -66,4 +66,7 @@ jobs:
           PIN_ONLY_REPO: ${{ github.workspace }}
         run: |
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          # The runner image's REALISED homelab lock, never master's (homelab FU-305, 2026-10-10): a bad
+          # lock on homelab master would otherwise red this required check until homelab reverts it.
+          if [ -f /opt/baked/homelab/devbox.lock ]; then cp /opt/baked/homelab/devbox.json /opt/baked/homelab/devbox.lock .homelab-lint/; fi
           devbox run --config "$GITHUB_WORKSPACE/.homelab-lint" -- bash "$GITHUB_WORKSPACE/.homelab-lint/scripts/pin-only-lint.sh" "$BASE_SHA"

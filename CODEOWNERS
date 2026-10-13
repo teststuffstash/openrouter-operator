@@ -1,36 +1,31 @@
-# Whole-repo human gate (2026-08-11, the reviewer-enable retrace). This repo builds the
-# openrouter-proxy/router — the fleet's egress, credential and budget chokepoint — so with the
-# platform stack's bot reviewer ON, a bot approval must never be able to auto-merge here alone:
-# every PR parks REVIEW_REQUIRED for the owner (the bot review is input, the human is the gate).
-# Enforced only together with require_code_owner_review=true (homelab tofu/github/variables.tf) —
-# without that ruleset flag this file is decorative, which is exactly the hole it closes.
-# Relaxation path, when wanted: carve unowned lanes per path (the agent-runtime pattern), never
-# by deleting the flag.
-* @RasmusSoot
+# Path ownership — OWN WHAT GOVERNS THE AGENT, NOT WHAT THE AGENT OPERATES ON (the homelab /
+# agent-runtime shape). Narrowed 2026-10-13 (operator: homelab's rule work made the codeowner a
+# non-blocker there; the platform repos were the ones still parking PRs — openrouter-operator#90
+# sat REVIEW_REQUIRED with the reviewer's APPROVED at head and CI green on the 3.15 interpreter).
+# Before this the whole repo was owned (2026-08-11, the reviewer-enable retrace: this repo builds
+# the fleet's egress/credential/budget chokepoint, so a bot approval alone must never merge).
+# The ruling that replaced it is homelab ADR-128/FU-233 (promoted after the trial week) extended
+# to the platform repos (homelab ADR-154): src/, tests/, chart/ and the Dockerfile merge on CI +
+# the reviewer bot — the rubric's read is the gate there, and the catches census
+# (homelab docs/spikes/codeowner-catches.md: 4 src/ catches in 10 human reads, 2 outage-class)
+# is the known cost the operator accepted. Still enforced only together with
+# require_code_owner_review=true (homelab tofu/github/variables.tf) — without that ruleset flag
+# this file is decorative. Revert = `git revert` of the narrowing commit.
+#
+# GitHub semantics: LAST matching pattern wins, and a pattern with NO owner REMOVES ownership.
+# scripts/deps-pin-guard.sh reads this file at the merge-base to classify a mixed PR — only
+# `*`, `/dir/` and `/path` shapes; anything fancier fails that guard closed.
 
-# ── Carve-outs (LAST match wins; a pattern with NO owner REMOVES ownership) ──────────────────
-# The dep-bump lane (Renovate + devbox-update): ownership REPLACED by scripts/deps-pin-guard.sh
-# inside the required `ci` check — a PR touching these alone carries only version/hash lines
-# (a PR that also touches an OWNED path is the code owner's read, and the guard steps aside; a PR
-# mixing them with another un-owned lane is refused). Keeps non-major bumps auto-merging on the
-# bot approval.
-/devbox.json
-/devbox.lock
-# The Python dep lane (operator 2026-09-27, "extend deps-pin-guard to pyproject.toml and uv.lock,
-# then un-own them"): same replacement owner — deps-pin-guard in the required `ci` admits only
-# version constraints / resolver hashes of EXISTING packages (scripts/deps_pin_shape.py is the
-# contract; a new or removed package, requires-python, tool tables → refused → owned route). Renovate's
-# pep621/uv lanes (dev deps `automerge`, runtime deps `deps-review`) merge on the bot's approval.
-/pyproject.toml
-/uv.lock
-# Renovate's pre-commit hook bumps (gitleaks, ruff-pre-commit): the org policy's mechanical
-# `automerge` lane (renovate-global.json — dev tooling, patch/minor). Owned, #71/#73 sat
-# REVIEW_REQUIRED for two days with the reviewer's APPROVED at head and nothing a human could add
-# (S9 #1988, 2026-09-27). The Dockerfile and src stay under the whole-repo gate above.
-/.pre-commit-config.yaml
-# The ownership file owns itself (the first thing an agent could otherwise propose is its own
-# ungating).
-/CODEOWNERS @RasmusSoot
+# ── The repo's own checks. scripts/ holds ci.sh, deps-pin-guard.sh + deps_pin_shape.py (the
+# dep lane's replacement owner), package-chart.sh and deploy-pin.sh (the publish path). A worker
+# able to edit them is judged by the check it edited — homelab un-owned its scripts/ under ADR-142
+# only with the gate-change lens + gate-drift report in place, and this repo carries neither
+# (the lens selects on `scripts/gate-drift.sh` at the default branch). Owned until that port.
+/scripts/           @RasmusSoot
+
+# ── The build+publish workflows (deploy.yaml pushes the image and opens the deploy-pin PR into
+# homelab), renovate-approve, ci. Owned; the action-pin lane is carved out below.
+/.github/           @RasmusSoot
 
 # ── Renovate's action-pin lane (homelab ADR-100 addendum / ADR-141, S9 #1990). Ownership is
 # REPLACED, not dropped: `pin-only-lint` (homelab scripts/pin-only-lint.sh, run inside the
@@ -40,3 +35,23 @@
 # Post-merge failures of push-only workflows roll back via the FU-1990 chain (drill passed on
 # agent-coordinator, 2026-09-27). One-line revert: restore the owner below.
 /.github/workflows/
+
+# ── The recipes are the agent's own instructions — an agent able to edit them is not gated at
+# all (the reviewer reads its rubric off the PR branch and refused to gate a change to its own
+# rules, homelab PR#386).
+/.agents/           @RasmusSoot
+
+# ── The ownership file owns itself (the first thing an agent could otherwise propose is its own
+# ungating).
+/CODEOWNERS         @RasmusSoot
+
+# ── Deliberately UNOWNED — CI + the reviewer bot are the gate:
+#   src/, tests/, chart/, Dockerfile, README.md, CLAUDE.md, .pre-commit-config.yaml
+# The dep files are un-owned too, with a REPLACEMENT owner: scripts/deps-pin-guard.sh in the
+# required `ci` check admits only version/hash lines of EXISTING packages (devbox.json/lock since
+# 2026-08-11; pyproject.toml/uv.lock since 2026-09-27 — scripts/deps_pin_shape.py is the
+# contract: a new or removed package, requires-python or a tool-table edit is refused, and with
+# nothing left to own the refusal parks on the operator's admin merge, as #90 did). Since
+# 2026-10-13 that shape test also runs when the PR touches other un-owned paths (a worker's
+# adaptation of a Renovate bump: lock refresh + Dockerfile); only an OWNED path in the PR puts the
+# whole read on the code owner instead.

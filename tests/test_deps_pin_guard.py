@@ -115,15 +115,14 @@ DEVBOX = """\
 
 _DEVBOX_LOCK = '{"lockfile_version": "1", "packages": {"uv@latest": {"version": "%s"}}}\n'
 
-# The repo's ownership shape: an owning `*` catch-all with ownerless carve-outs (LAST match wins).
+# The repo's ownership shape since 2026-10-13 (homelab ADR-154): the governance core owned path
+# by path, NO `*` catch-all, ownerless carve-outs (LAST match wins). src/, tests/, chart/, the
+# Dockerfile, the dep files and .pre-commit-config.yaml match nothing → un-owned.
 CODEOWNERS = """\
-* @owner
-/devbox.json
-/devbox.lock
-/pyproject.toml
-/uv.lock
-/.pre-commit-config.yaml
+/scripts/ @owner
+/.github/ @owner
 /.github/workflows/
+/.agents/ @owner
 /CODEOWNERS @owner
 """
 
@@ -309,53 +308,119 @@ def test_pyproject_tool_table_edit_is_refused(tmp_path: pathlib.Path) -> None:
     assert "line-length" in r.stderr
 
 
-def test_mixed_pin_bump_and_unowned_lane_file_is_refused(tmp_path: pathlib.Path) -> None:
-    # Guarded file + another carved-out (un-owned) path: no human reads it and the other lane's
-    # gate is not this one → refused. Both the exact-file and the directory carve-out shapes.
+def test_mixed_with_unowned_paths_runs_the_shape_test(tmp_path: pathlib.Path) -> None:
+    # Guarded file + un-owned paths (2026-10-13): the other paths ride their own gate (reviewer +
+    # CI, pin-only-lint for a workflow pin) and the dep-file delta still has to be pin material.
+    # Three shapes: a carved-out lane file, a workflow pin, and #90's — src/ + the Dockerfile.
     head_py = PYPROJECT.replace('"kopf>=1.37"', '"kopf>=1.38"')
     r = _verdict(
         tmp_path / "a", {"pyproject.toml": head_py, ".pre-commit-config.yaml": "repos: [x]\n"}
     )
-    assert r.returncode == 1
-    assert "UN-OWNED paths" in r.stderr and ".pre-commit-config.yaml" in r.stderr
+    assert r.returncode == 0, r.stderr
+    assert "UN-OWNED path(s)" in r.stdout and "pure dep-pin diff" in r.stdout
     r = _verdict(
-        tmp_path / "b", {"uv.lock": UV_LOCK + "\n", ".github/workflows/ci.yaml": "on: pr\n"}
+        tmp_path / "b",
+        {
+            "uv.lock": UV_LOCK.replace("revision = 3", "revision = 4"),
+            ".github/workflows/ci.yaml": "on: pr\n",
+        },
     )
-    assert r.returncode == 1
-    assert "UN-OWNED paths" in r.stderr and ".github/workflows/ci.yaml" in r.stderr
+    assert r.returncode == 0, r.stderr
+    r = _verdict(
+        tmp_path / "c",
+        {"pyproject.toml": head_py, "src/demo.py": "X = 2\n", "Dockerfile": "FROM python\n"},
+    )
+    assert r.returncode == 0, r.stderr
+    assert "src/demo.py" in r.stdout and "Dockerfile" in r.stdout
 
 
-def test_mixed_with_owned_path_is_admitted_to_the_human_gate(tmp_path: pathlib.Path) -> None:
-    # A feature PR adding a dependency WITH its code: src/ is owned by `*`, so GitHub requires the
-    # code owner on the whole PR and that read covers pyproject.toml — the guard steps aside.
-    # (The pre-2026-09-27 rule "may touch nothing else" made such a PR unmergeable.)
+def test_mixed_with_unowned_paths_and_structural_dep_edit_is_refused(
+    tmp_path: pathlib.Path,
+) -> None:
+    # No owned path in the PR → no human reads it → the structural edit cannot ride the bot's
+    # approval of src/. A new package, and the #90 shape of a tool-table edit beside a Dockerfile.
     head_py = PYPROJECT.replace(
         '    "kubernetes>=29",\n', '    "kubernetes>=29",\n    "httpx>=0.28",\n'
     )
-    r = _verdict(tmp_path, {"pyproject.toml": head_py, "src/demo.py": "import httpx\n"})
+    r = _verdict(tmp_path / "a", {"pyproject.toml": head_py, "src/demo.py": "import httpx\n"})
+    assert r.returncode == 1
+    assert "UN-OWNED path(s)" in r.stdout
+    assert "not pin-only" in r.stderr and "new dependency: project/dependencies/httpx" in r.stderr
+    head_py = PYPROJECT.replace("line-length = 100", "line-length = 120")
+    r = _verdict(tmp_path / "b", {"pyproject.toml": head_py, "Dockerfile": "FROM python\n"})
+    assert r.returncode == 1
+    assert "line-length" in r.stderr
+
+
+def test_mixed_with_owned_path_is_admitted_to_the_human_gate(tmp_path: pathlib.Path) -> None:
+    # A PR touching an OWNED path (.agents/ here): GitHub requires the code owner on the whole PR
+    # and that read covers pyproject.toml — the guard steps aside, even for a structural edit.
+    head_py = PYPROJECT.replace(
+        '    "kubernetes>=29",\n', '    "kubernetes>=29",\n    "httpx>=0.28",\n'
+    )
+    r = _verdict(tmp_path, {"pyproject.toml": head_py, ".agents/fix.yaml": "x: 1\n"})
     assert r.returncode == 0, r.stderr
-    assert "OWNED path(s)" in r.stdout and "src/demo.py" in r.stdout
+    assert "OWNED path(s)" in r.stdout and ".agents/fix.yaml" in r.stdout
 
 
-def test_mixed_without_star_catch_all_is_refused(tmp_path: pathlib.Path) -> None:
-    # No `*` owner → "not un-owned" does not imply "owned" → the old strict rule applies.
+def test_last_match_wins_inside_an_owned_directory(tmp_path: pathlib.Path) -> None:
+    # `/.github/ @owner` then ownerless `/.github/workflows/`: dependabot.yml is owned (human
+    # gate), a workflow file is not (pin-only-lint's lane) — so the same structural edit passes
+    # beside the first and is refused beside the second.
+    head_py = PYPROJECT.replace(
+        '    "kubernetes>=29",\n', '    "kubernetes>=29",\n    "httpx>=0.28",\n'
+    )
+    r = _verdict(tmp_path / "a", {"pyproject.toml": head_py, ".github/dependabot.yml": "v: 2\n"})
+    assert r.returncode == 0, r.stderr
+    assert ".github/dependabot.yml" in r.stdout
+    r = _verdict(
+        tmp_path / "b", {"pyproject.toml": head_py, ".github/workflows/ci.yaml": "on: pr\n"}
+    )
+    assert r.returncode == 1
+    assert "new dependency" in r.stderr
+
+
+def test_star_catch_all_owns_every_unmatched_path(tmp_path: pathlib.Path) -> None:
+    # The pre-2026-10-13 shape still classifies: `*` owns src/, so the human gate covers the PR.
     repo, _ = _make_repo(tmp_path)
-    _write(repo, {"CODEOWNERS": "/CODEOWNERS @owner\n/pyproject.toml\n"})
-    base = _commit_all(repo, "no catch-all")
+    _write(repo, {"CODEOWNERS": "* @owner\n/pyproject.toml\n/CODEOWNERS @owner\n"})
+    base = _commit_all(repo, "catch-all")
     _write(
         repo,
         {
-            "pyproject.toml": PYPROJECT.replace('"kopf>=1.37"', '"kopf>=1.38"'),
+            "pyproject.toml": PYPROJECT.replace(
+                '    "kubernetes>=29",\n', '    "kubernetes>=29",\n    "httpx>=0.28",\n'
+            ),
             "src/demo.py": "X = 2\n",
         },
     )
     r = _run_guard(repo, base, _commit_all(repo, "head"))
-    assert r.returncode == 1
-    assert "no owning '*' catch-all" in r.stderr and "src/demo.py" in r.stderr
+    assert r.returncode == 0, r.stderr
+    assert "OWNED path(s)" in r.stdout and "src/demo.py" in r.stdout
 
 
-def test_mixed_with_unparseable_carve_out_is_refused(tmp_path: pathlib.Path) -> None:
-    # An ownerless pattern the guard cannot classify (`*.md` — could un-own anything) → refuse
+def test_ownership_is_read_at_the_base_not_the_head(tmp_path: pathlib.Path) -> None:
+    # A PR cannot un-own its way out: it drops the `/CODEOWNERS @owner` line, but the guard
+    # classifies against the merge-base (what GitHub evaluates), where CODEOWNERS is still owned
+    # — so the PR goes to the code owner, who sees the ungating. (A PR that un-owns a path for
+    # itself always touches CODEOWNERS, and CODEOWNERS owns itself: there is no head-read shape.)
+    head_py = PYPROJECT.replace(
+        '    "kubernetes>=29",\n', '    "kubernetes>=29",\n    "httpx>=0.28",\n'
+    )
+    r = _verdict(
+        tmp_path,
+        {
+            "pyproject.toml": head_py,
+            "src/demo.py": "X = 2\n",
+            "CODEOWNERS": CODEOWNERS.replace("/CODEOWNERS @owner\n", ""),
+        },
+    )
+    assert r.returncode == 0, r.stderr
+    assert "OWNED path(s)" in r.stdout and "CODEOWNERS" in r.stdout
+
+
+def test_mixed_with_unparseable_pattern_is_refused(tmp_path: pathlib.Path) -> None:
+    # A pattern the guard cannot classify (`*.md` — could own or un-own anything) → refuse
     # rather than guess which paths are owned.
     repo, _ = _make_repo(tmp_path)
     _write(repo, {"CODEOWNERS": CODEOWNERS + "*.md\n"})
@@ -372,7 +437,7 @@ def test_mixed_with_unparseable_carve_out_is_refused(tmp_path: pathlib.Path) -> 
     assert "do not understand" in r.stderr and "*.md" in r.stderr
 
 
-def test_missing_codeowners_keeps_the_strict_rule(tmp_path: pathlib.Path) -> None:
+def test_missing_codeowners_owns_nothing_so_the_shape_test_runs(tmp_path: pathlib.Path) -> None:
     repo, _ = _make_repo(tmp_path)
     (repo / "CODEOWNERS").unlink()
     base = _commit_all(repo, "no codeowners")
@@ -384,8 +449,8 @@ def test_missing_codeowners_keeps_the_strict_rule(tmp_path: pathlib.Path) -> Non
         },
     )
     r = _run_guard(repo, base, _commit_all(repo, "head"))
-    assert r.returncode == 1
-    assert "no owning '*' catch-all" in r.stderr
+    assert r.returncode == 0, r.stderr
+    assert "UN-OWNED path(s)" in r.stdout and "pure dep-pin diff" in r.stdout
 
 
 def test_uv_lock_new_package_is_refused(tmp_path: pathlib.Path) -> None:

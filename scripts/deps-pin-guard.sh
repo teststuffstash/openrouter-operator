@@ -9,11 +9,15 @@
 # review OR a pin-only shape. Concretely, for a PR touching a guarded file:
 #   - it also touches an OWNED path → GitHub requires the code owner on the whole PR, and that
 #     read covers the dep-file change too → pass (a feature PR adding a dependency together with
-#     its code stays possible; nothing is un-gated);
-#   - it touches ONLY guarded files → every guarded file's delta must be pin material;
-#   - it touches guarded files + other UN-OWNED paths (.pre-commit-config.yaml, a workflow pin) →
-#     refused: those lanes have their own owners and a shared PR would let one lane's change ride
-#     the other's gate.
+#     an owned change stays possible; nothing is un-gated);
+#   - every other path it touches is UN-owned (src/, the Dockerfile, a carved-out lane file —
+#     the repo's shape since the 2026-10-13 narrowing, homelab ADR-154) → every guarded file's
+#     delta must be pin material, exactly as for a pure dep-file PR: the other paths ride their
+#     own gate (the reviewer + CI, pin-only-lint for a workflow pin) and nothing rides this one.
+#     Until 2026-10-13 such a mix was refused outright (openrouter-operator#83's fileset rule) —
+#     under the whole-repo `*` owner every non-lane path was owned, so "mixed with un-owned" could
+#     only mean two mechanical lanes in one PR; with src/ un-owned it is a worker adapting a
+#     Renovate bump (#90: lock refresh + Dockerfile), and refusing it would park every such PR.
 # Pin material per file:
 #   devbox.json     version-string lines (package@version, "version": fields);
 #   devbox.lock     machine-generated hash material — nix verifies it against the substituter
@@ -26,11 +30,12 @@
 #                   must be identical (a new transitive package parks for the human: STRICT rule).
 # The shape tests live in scripts/deps_pin_shape.py (its docstring is the contract).
 #
-# Ownership is read from CODEOWNERS at the PR's merge-base (what GitHub evaluates): a pattern with
-# no owner un-owns; the repo must carry an owning `*` catch-all (otherwise "not un-owned" does not
-# imply "owned" and every mixed PR is refused, the pre-2026-09-27 behaviour). Only the simple
-# carve-out shapes are understood — `/file` (exact) and `/dir/` (prefix); any other ownerless
-# pattern makes the guard refuse mixed PRs rather than guess (fail closed).
+# Ownership is read from CODEOWNERS at the PR's merge-base (what GitHub evaluates), LAST matching
+# pattern wins, a pattern with no owner un-owns, a path no pattern matches is UN-owned (the repo
+# has no `*` catch-all since 2026-10-13 — it owns what governs the agent, path by path). Only the
+# simple shapes are understood — `*` (everything), `/dir/` (prefix) and `/path` (that file or
+# directory); any other pattern makes the guard refuse mixed PRs rather than guess (fail closed).
+# A missing CODEOWNERS owns nothing, so a mixed PR gets the pin-shape test.
 #
 # Runs inside the required `ci` check on pull_request only (a push run has no PR fileset).
 # Reads the filenames via the API — the checkout is shallow, a three-dot git diff has no merge
@@ -88,43 +93,46 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
 extra=$(printf '%s\n' "$files" | grep -vxF "$(printf '%s\n' $GUARD_SET)" || true)
 if [ -n "$extra" ]; then
-  # Classify the other paths against CODEOWNERS at the merge-base (GitHub's own evaluation point).
+  # Classify the other paths against CODEOWNERS at the merge-base (GitHub's own evaluation point):
+  # walk the rules in order, the last one that matches decides (owners present → owned).
   content_at "$BASE_SHA" CODEOWNERS "$tmp/codeowners"
-  rules=$(grep -Ev '^\s*(#|$)' "$tmp/codeowners" || true)
-  star_owned=$(printf '%s\n' "$rules" | grep -Ec '^\*\s+\S' || true)
-  unowned=$(printf '%s\n' "$rules" | awk 'NF==1 {print $1}')
+  grep -Ev '^[[:space:]]*(#|$)' "$tmp/codeowners" | sed 's/[[:space:]]#.*$//' >"$tmp/rules" || true
   owned_extra=""; unowned_extra=""; unparseable=""
-  for f in $extra; do
-    hit=""
-    for pat in $unowned; do
-      case "$pat" in
-        */) p="${pat#/}"; case "$f" in "$p"*) hit=1;; esac;;
-        /*) [ "$f" = "${pat#/}" ] && hit=1;;
-        */*) case "$f" in "$pat"|"$pat"/*) hit=1;; esac;;
-        *) unparseable="$unparseable $pat";;
-      esac
-    done
-    if [ -n "$hit" ]; then unowned_extra="$unowned_extra $f"; else owned_extra="$owned_extra $f"; fi
-  done
+  while read -r pat _; do
+    case "$pat" in
+      '*') ;;
+      *'*'*|*'?'*|*'['*|*'!'*|*'\'*) unparseable="$unparseable $pat";;
+      /*) ;;
+      *) unparseable="$unparseable $pat";;
+    esac
+  done <"$tmp/rules"
   if [ -n "$unparseable" ]; then
-    echo "deps-pin-guard: FAIL — cannot classify the PR's other paths: CODEOWNERS carve-out pattern(s) I do not understand:$unparseable" >&2
-    echo "only '/file' and '/dir/' ownerless patterns are recognised; a mixed PR cannot be admitted without knowing what is owned" >&2
+    echo "deps-pin-guard: FAIL — cannot classify the PR's other paths: CODEOWNERS pattern(s) I do not understand:$unparseable" >&2
+    echo "only '*', '/dir/' and '/path' patterns are recognised; a mixed PR cannot be admitted without knowing what is owned" >&2
     exit 1
   fi
-  if [ "$star_owned" -eq 0 ]; then
-    echo "deps-pin-guard: FAIL — PR touches guarded dep file(s) ($touched ) AND other paths, and CODEOWNERS has no owning '*' catch-all:" >&2
-    printf '  %s\n' $extra >&2
-    echo "without a catch-all 'not un-owned' does not mean 'owned'; a dep bump must be a pure {$(echo $GUARD_SET | tr ' ' ',')} diff" >&2
-    exit 1
+  for f in $extra; do
+    owned=""
+    while read -r pat owners; do
+      hit=""
+      case "$pat" in
+        '*') hit=1;;
+        */) p="${pat#/}"; case "$f" in "$p"*) hit=1;; esac;;
+        *) p="${pat#/}"; case "$f" in "$p"|"$p"/*) hit=1;; esac;;
+      esac
+      if [ -n "$hit" ]; then
+        if [ -n "$owners" ]; then owned=1; else owned=""; fi
+      fi
+    done <"$tmp/rules"
+    if [ -n "$owned" ]; then owned_extra="$owned_extra $f"; else unowned_extra="$unowned_extra $f"; fi
+  done
+  if [ -n "$owned_extra" ]; then
+    echo "deps-pin-guard: pass — PR also touches OWNED path(s) ($owned_extra ); the code owner's required review covers the dep-file change ($touched )"
+    exit 0
   fi
-  if [ -n "$unowned_extra" ]; then
-    echo "deps-pin-guard: FAIL — PR touches guarded dep file(s) ($touched ) AND other UN-OWNED paths:" >&2
-    printf '  %s\n' $unowned_extra >&2
-    echo "each carved-out lane rides its own gate; a dep bump must be a pure {$(echo $GUARD_SET | tr ' ' ',')} diff" >&2
-    exit 1
-  fi
-  echo "deps-pin-guard: pass — PR also touches OWNED path(s) ($owned_extra ); the code owner's required review covers the dep-file change ($touched )"
-  exit 0
+  # Every other path is un-owned: those ride their own gate (reviewer + CI, pin-only-lint); the
+  # guarded files still need the pin-only shape below — nothing rides THIS gate (2026-10-13).
+  echo "deps-pin-guard: PR also touches UN-OWNED path(s) ($unowned_extra ) — they ride their own gate; the dep-file delta ($touched ) must still be pin-only"
 fi
 
 for g in $touched; do

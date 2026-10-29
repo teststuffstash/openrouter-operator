@@ -31,7 +31,7 @@ instructions: |
   3. Make the MINIMAL change (most likely `src/openrouter_operator/{reconcile,models,ports}.py`) to go
      green. Keep `devbox run ci` green end-to-end: ruff (lint+format), **mypy --strict**, pytest, coverage
      `fail_under`. Don't break other cases or widen types with `# type: ignore`/`Any` to force green.
-  4. `devbox run scan-secrets` must be clean. Then open the PR.
+  4. Then open the PR with `pr-open --title "…" --body-file <file>` (the ground rules): it runs this repo's gate (`devbox run pr-gate` = `devbox run ci` + `scan-secrets`) and opens the PR only on green — do not run that gate yourself just before.
 
   Hard rules:
   - Touch `src/` + `tests/` only (docs if the fix needs it). Do NOT edit: `chart/`, `deploy/`,
@@ -39,7 +39,7 @@ instructions: |
     (`adapter.py`/`k8s.py`/`operator.py`), still assert the behaviour at the `decide()` seam with a fake.
   - Branch `fix/issue-{{ issue }}-<slug>` and PUSH IT EARLY — right after the first (RED) commit, then
     after each green step. Incremental pushes are cheap insurance: if the run dies (budget/rate-limit/
-    crash) the branch survives and the next run resumes. Open the PR once `devbox run ci` is green +
+    crash) the branch survives and the next run resumes. Open it with `pr-open` (it gates on `pr-gate`) —
     clean. NEVER push to master.
   - If the bug is NOT reproducible in the current code, STOP and report that with the (passing) test you
     wrote as evidence — do not fabricate a fix or weaken an assertion to force green.

@@ -27,7 +27,7 @@ instructions: |
      the manifests the issue asks for (one table of expectations, not N near-duplicate tests).
      Prove it RED, commit the failing case, PUSH the branch immediately.
   2. Make the MINIMAL chart change to go green. `devbox run ci` must stay green end-to-end.
-  3. `devbox run scan-secrets` clean. Then open the PR.
+  3. Then open the PR with `pr-open --title "…" --body-file <file>` (the ground rules): it runs this repo's gate (`devbox run pr-gate` = `devbox run ci` + `scan-secrets`) and opens the PR only on green — do not run that gate yourself just before.
 
   Hard rules:
   - Touch `chart/` + `tests/` only (docs if the deliverable needs it). Do NOT edit: `src/`,

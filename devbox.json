@@ -15,7 +15,7 @@
     "scripts": {
       "ci": ["bash scripts/ci.sh"],
       "pr-gate": [
-        "bash scripts/ci.sh"
+        "bash scripts/ci.sh && devbox run scan-secrets"
       ],
       "scan-secrets": ["gitleaks detect --source . --no-banner --verbose"],
       "package-chart": ["bash scripts/package-chart.sh"],

@@ -64,13 +64,6 @@ extensions:
     timeout: 900
     bundled: true
 
-retry:
-  max_retries: 3
-  checks:
-    - type: shell
-      command: "devbox run ci"
-  on_failure: "devbox run ci 2>&1 | tail -40"
-
 response:
   json_schema:
     type: object

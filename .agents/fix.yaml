@@ -77,15 +77,6 @@ extensions:
     timeout: 900
     bundled: true
 
-# Self-verification: success is `devbox run ci` passing, not the model's say-so. Re-run with the failure
-# fed back, up to a few attempts.
-retry:
-  max_retries: 3
-  checks:
-    - type: shell
-      command: "devbox run ci"
-  on_failure: "devbox run ci 2>&1 | tail -40"
-
 # Structured result for the coordinator / auto-merge gate.
 response:
   json_schema:

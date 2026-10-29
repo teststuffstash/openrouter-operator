@@ -14,6 +14,9 @@
     "init_hook": [],
     "scripts": {
       "ci": ["bash scripts/ci.sh"],
+      "pr-gate": [
+        "bash scripts/ci.sh"
+      ],
       "scan-secrets": ["gitleaks detect --source . --no-banner --verbose"],
       "package-chart": ["bash scripts/package-chart.sh"],
       "lint-chart": ["helm lint chart/ && helm template chart/ >/dev/null"]

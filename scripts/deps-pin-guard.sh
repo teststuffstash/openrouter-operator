@@ -23,11 +23,16 @@
 #   devbox.lock     machine-generated hash material — nix verifies it against the substituter
 #                   signatures, so it is admitted as a whole;
 #   pyproject.toml  version constraints of EXISTING dependencies inside the dependency arrays
-#                   (same package names on both sides — a new/removed package, requires-python,
-#                   [project] version and every tool table are structure);
+#                   (same package names on both sides — a new/removed package, [project] version
+#                   and every other tool-table line are structure); plus the Python version SET
+#                   (requires-python, ruff target-version, mypy python_version) moved AS A WHOLE
+#                   onto the head Dockerfile's `FROM python:X.Y` — a member moved alone, or to any
+#                   other X.Y, is structure;
 #   uv.lock         the resolver's version / sdist / wheel (url, hash, size) lines and the
 #                   requires-dist specifiers — the [[package]] set, sources and dependency graph
-#                   must be identical (a new transitive package parks for the human: STRICT rule).
+#                   must be identical (a new transitive package parks for the human: STRICT rule);
+#                   the header's requires-python (+ its python_full_version resolution markers)
+#                   follows the same whole-set rule.
 # The shape tests live in scripts/deps_pin_shape.py (its docstring is the contract).
 #
 # Ownership is read from CODEOWNERS at the PR's merge-base (what GitHub evaluates), LAST matching
@@ -135,6 +140,8 @@ if [ -n "$extra" ]; then
   echo "deps-pin-guard: PR also touches UN-OWNED path(s) ($unowned_extra ) — they ride their own gate; the dep-file delta ($touched ) must still be pin-only"
 fi
 
+# The image's Python X.Y at the head — the version a Python-version-set move must converge on.
+content_at "$HEAD_SHA" Dockerfile "$tmp/dockerfile"
 for g in $touched; do
   content_at "$BASE_SHA" "$g" "$tmp/base"
   content_at "$HEAD_SHA" "$g" "$tmp/head"
@@ -153,10 +160,10 @@ for g in $touched; do
       fi;;
     pyproject.toml|uv.lock)
       case "$g" in pyproject.toml) kind=pyproject;; *) kind=uv-lock;; esac
-      if ! reasons=$(python3 "$HERE/deps_pin_shape.py" "$kind" "$tmp/base" "$tmp/head" 2>&1); then
+      if ! reasons=$(python3 "$HERE/deps_pin_shape.py" "$kind" "$tmp/base" "$tmp/head" "$tmp/dockerfile" 2>&1); then
         echo "deps-pin-guard: FAIL — $g delta is not pin-only (structure changed):" >&2
         printf '%s\n' "$reasons" | head -20 >&2
-        echo "only version constraints / resolver hashes of EXISTING packages ride this lane; a new or removed package, requires-python or any other edit takes the owned route" >&2
+        echo "only version constraints / resolver hashes of EXISTING packages, and the whole Python version set moving onto the Dockerfile's FROM python:X.Y, ride this lane; a new or removed package, a lone requires-python move or any other edit takes the owned route" >&2
         exit 1
       fi;;
   esac

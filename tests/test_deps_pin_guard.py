@@ -12,7 +12,8 @@ a lone requires-python move, tool tables, a new [[package]]) is structure → re
 
 The Python version SET (requires-python, ruff target-version, mypy python_version, uv.lock's
 requires-python) is pin material only as a whole: every member at the head reads ONE X.Y, equal to
-the head Dockerfile's `FROM python:X.Y` (deps_pin_shape.py docstring). Decision table:
+the head Dockerfile's `FROM python:X.Y`, the set read across BOTH head files (deps_pin_shape.py
+docstring). Decision table:
 
 | row | head | expect |
 |---|---|---|
@@ -25,6 +26,10 @@ the head Dockerfile's `FROM python:X.Y` (deps_pin_shape.py docstring). Decision 
 | set member in a non-member spelling | `>=3.15,<4` | fail |
 | uv.lock requires-python ≠ image | lock 3.16 | fail |
 | uv.lock markers change without a requires-python move | | fail |
+| only uv.lock's floor moved (pyproject at 3.14) | image 3.15 | fail |
+| pyproject set moved, uv.lock floor left behind | image 3.15 | fail |
+| a member in another spelling at base, the rest move | `>=3.14,<4` | fail |
+| a new marker fork beside an admitted move | `3.16` split | fail |
 """
 
 from __future__ import annotations
@@ -556,6 +561,11 @@ def _py_set(text: str, xy: str) -> str:
     )
 
 
+def _lock_at(xy: str) -> str:
+    """The fixture lock with its header requires-python (the lock's set member) at `xy`."""
+    return UV_LOCK.replace('requires-python = ">=3.14"', f'requires-python = ">={xy}"')
+
+
 # The uv fork a 3.14 floor carries when some package splits at 3.15 (openrouter-operator#123's
 # base): raising the floor to 3.15 collapses it — the block disappears.
 _UV_FORKED = UV_LOCK.replace(
@@ -594,7 +604,7 @@ def test_whole_python_set_onto_the_image_version_is_admitted(tmp_path: pathlib.P
 def test_python_set_converging_with_a_member_already_at_the_image_is_admitted(
     tmp_path: pathlib.Path,
 ) -> None:
-    # The real base: mypy already read 3.15, requires-python + ruff lagged at 3.14.
+    # The real base: mypy already read 3.15, requires-python + ruff + the lock lagged at 3.14.
     # Only the laggards move; the head set is {3.15} == the image (already 3.15 at base) → pass.
     repo, _ = _make_repo(tmp_path)
     _write(
@@ -607,7 +617,7 @@ def test_python_set_converging_with_a_member_already_at_the_image_is_admitted(
         },
     )
     base = _commit_all(repo, "image + mypy at 3.15")
-    _write(repo, {"pyproject.toml": _py_set(PYPROJECT, "3.15")})
+    _write(repo, {"pyproject.toml": _py_set(PYPROJECT, "3.15"), "uv.lock": _lock_at("3.15")})
     r = _run_guard(repo, base, _commit_all(repo, "head"))
     assert r.returncode == 0, r.stderr
 
@@ -634,7 +644,9 @@ def test_python_set_moved_to_a_version_other_than_the_image_is_refused(
 def test_python_set_move_plus_another_structural_edit_is_refused(tmp_path: pathlib.Path) -> None:
     # The set move is pin material; the line-length edit beside it is still structure.
     head = _py_set(PYPROJECT, "3.15").replace("line-length = 100", "line-length = 120")
-    r = _verdict(tmp_path, {"pyproject.toml": head, "Dockerfile": _IMAGE_315})
+    r = _verdict(
+        tmp_path, {"pyproject.toml": head, "uv.lock": _lock_at("3.15"), "Dockerfile": _IMAGE_315}
+    )
     assert r.returncode == 1
     assert "line-length" in r.stderr
     assert "python version set" not in r.stderr
@@ -657,7 +669,7 @@ def test_python_set_move_without_one_readable_image_version_is_refused(
         (repo / "Dockerfile").unlink()
     else:
         _write(repo, {"Dockerfile": dockerfile})
-    _write(repo, {"pyproject.toml": _py_set(PYPROJECT, "3.15")})
+    _write(repo, {"pyproject.toml": _py_set(PYPROJECT, "3.15"), "uv.lock": _lock_at("3.15")})
     r = _run_guard(repo, base, _commit_all(repo, "head"))
     assert r.returncode == 1
     assert "image: <none readable>" in r.stderr
@@ -693,3 +705,66 @@ def test_uv_lock_wheels_array_emptied_by_a_bump_is_admitted(tmp_path: pathlib.Pa
     )
     r = _verdict(tmp_path, {"uv.lock": head})
     assert r.returncode == 0, r.stderr
+
+
+def test_only_uv_lock_floor_moved_is_refused(tmp_path: pathlib.Path) -> None:
+    # The set is judged ACROSS both head files: the lock's floor at the image's 3.15 while
+    # pyproject's three members stay 3.14 → the head set is {3.14, 3.15} → refused.
+    r = _verdict(tmp_path, {"uv.lock": _lock_at("3.15"), "Dockerfile": _IMAGE_315})
+    assert r.returncode == 1
+    assert "uv.lock/requires-python 3.14 → 3.15" in r.stderr
+    assert "project/requires-python=3.14" in r.stderr
+
+
+def test_pyproject_set_moved_with_the_lock_left_behind_is_refused(tmp_path: pathlib.Path) -> None:
+    # The reverse: pyproject's three members reach 3.15, the lock's floor stays 3.14 → refused.
+    r = _verdict(tmp_path, {"pyproject.toml": _py_set(PYPROJECT, "3.15"), "Dockerfile": _IMAGE_315})
+    assert r.returncode == 1
+    assert "uv.lock/requires-python=3.14" in r.stderr
+
+
+def test_set_member_in_another_spelling_never_joins_the_set(tmp_path: pathlib.Path) -> None:
+    # Base spells requires-python `">=3.14,<4"` (structure, so not a member); ruff, mypy and the
+    # lock move to the image's 3.15. The head member set lacks project/requires-python → refused,
+    # though every member it CAN read says 3.15.
+    repo, _ = _make_repo(tmp_path)
+    odd = PYPROJECT.replace('">=3.14"', '">=3.14,<4"')
+    _write(repo, {"pyproject.toml": odd})
+    base = _commit_all(repo, "odd spelling")
+    _write(
+        repo,
+        {
+            "pyproject.toml": _py_set(odd, "3.15"),
+            "uv.lock": _lock_at("3.15"),
+            "Dockerfile": _IMAGE_315,
+        },
+    )
+    r = _run_guard(repo, base, _commit_all(repo, "head"))
+    assert r.returncode == 1
+    assert "missing or not in member spelling: project/requires-python" in r.stderr
+
+
+def test_uv_lock_markers_fork_beside_an_admitted_move_is_refused(tmp_path: pathlib.Path) -> None:
+    # A raised floor only COLLAPSES a fork; a fork entry that appears beside the move is structure.
+    head_lock = _lock_at("3.15").replace(
+        'requires-python = ">=3.15"\n',
+        'requires-python = ">=3.15"\n'
+        "resolution-markers = [\n"
+        "    \"python_full_version >= '3.16'\",\n"
+        "    \"python_full_version < '3.16'\",\n"
+        "]\n",
+    )
+    repo, _ = _make_repo(tmp_path)
+    _write(repo, {"uv.lock": _UV_FORKED})
+    base = _commit_all(repo, "forked lock")
+    _write(
+        repo,
+        {
+            "pyproject.toml": _py_set(PYPROJECT, "3.15"),
+            "uv.lock": head_lock,
+            "Dockerfile": _IMAGE_315,
+        },
+    )
+    r = _run_guard(repo, base, _commit_all(repo, "head"))
+    assert r.returncode == 1
+    assert "may only collapse with a floor move, never fork" in r.stderr

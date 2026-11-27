@@ -2,8 +2,10 @@
 scripts/deps-pin-guard.sh (the CODEOWNERS replacement owner for pyproject.toml + uv.lock,
 operator direction 2026-09-27).
 
-    python3 scripts/deps_pin_shape.py pyproject <base-file> <head-file> [<head-Dockerfile>]
-    python3 scripts/deps_pin_shape.py uv-lock   <base-file> <head-file> [<head-Dockerfile>]
+    python3 scripts/deps_pin_shape.py pyproject <base-file> <head-file> [<head-Dockerfile> \
+        <head-pyproject.toml> <head-uv.lock>]
+    python3 scripts/deps_pin_shape.py uv-lock   <base-file> <head-file> [<head-Dockerfile> \
+        <head-pyproject.toml> <head-uv.lock>]
 
 Exit 0 when the head differs from the base ONLY in pin material; exit 1 with the offending lines
 on stderr otherwise. Everything not recognised as pin material is a refusal — the check fails
@@ -27,11 +29,14 @@ The Python version SET is pin material only as a whole. Its pyproject members ar
 `[project] requires-python = ">=X.Y"`, `[tool.ruff] target-version = "pyXY"` and
 `[tool.mypy] python_version = "X.Y"` — exactly those spellings; any other form of the line stays
 structure. A member line reduces to a placeholder (its POSITION is still structure) and its X.Y is
-collected; when any member's value moved, the diff is admitted only if EVERY member at the head
-reads one X.Y and that X.Y equals the head Dockerfile's `FROM python:X.Y…` tag (the image Renovate
-already moved — the set converging on it, tests/test_python_version_set.py's invariant). A member
-moved alone, a set split across values, a set moved to anything but the image, or no readable
-image tag → refused. Without the Dockerfile argument no set move is admitted (fail closed).
+collected; when any member's value moved, the diff is admitted only if EVERY member of the set
+ACROSS BOTH head files (pyproject's three + uv.lock's header requires-python) is present in its
+member spelling and reads the head Dockerfile's `FROM python:X.Y…` tag (the image the set
+converges on — tests/test_python_version_set.py's invariant). The set is read from both head files
+whichever file is being checked, so a member moved in one file while the other lags is refused. A
+member moved alone, a member missing or in another spelling, a set split across values, a set
+moved to anything but the image, or no readable image tag → refused. Without the head-set
+arguments no set move is admitted (fail closed).
 
 uv.lock — pin material is the resolver's per-package version + artifact lines: `version = "…"`,
 `revision = N`, `sdist = { url, hash, size[, upload-time] }`, the wheel entries in `wheels = [ … ]`,
@@ -40,10 +45,10 @@ lock's copy of the pyproject constraint — normalised so the NAME must stay). A
 array holding only wheel lines is pin material as a whole: a release (or a raised Python floor)
 can leave a package with zero matching wheels, and the wheel count is already pin material. The
 header's `requires-python = ">=X.Y"` is the lock's Python-version-set member, under the same rule
-as pyproject's (head value == the head image's X.Y); the header's top-level `resolution-markers`
-array, when every entry is a bare `python_full_version` comparison, may change only together with
-an admitted requires-python move (uv forks the resolution on the Python floor — raising it
-collapses the fork). The `[[package]]`
+as pyproject's; the header's top-level `resolution-markers` array, when every entry is a bare
+`python_full_version` comparison, may only SHRINK, and only together with an admitted
+requires-python move (uv forks the resolution on the Python floor — raising it collapses the
+fork; a new fork entry is structure). The `[[package]]`
 headers with their `name = "…"` and `source = …` lines, every `dependencies = [ { name = … } ]`
 graph entry, and every per-package `resolution-markers` are structure: a package added or removed
 (a new transitive dependency uv pulled in for a bump) is refused and parks for the human. That is
@@ -112,15 +117,22 @@ def image_python_version(dockerfile: str | None) -> str | None:
     return found.pop() if len(found) == 1 else None
 
 
-def _set_move_reasons(
-    base: dict[str, list[str]], head: dict[str, list[str]], image: str | None
-) -> list[str]:
-    """The Python-version-set rule shared by both files: no member moved → nothing to say; a move
-    is admitted only when every head member reads the image's X.Y."""
+_UV_SET_KEY = "uv.lock/requires-python"
+# Every member the set must hold at the head — derived from the member table, not restated.
+_SET_KEYS = frozenset({f"{t}/{k}" for t, k in _PY_SET_MEMBERS} | {_UV_SET_KEY})
+
+PySet = dict[str, list[str]]
+
+
+def _set_move_reasons(base: PySet, head: PySet, image: str | None, head_set: PySet) -> list[str]:
+    """The Python-version-set rule shared by both files: no member of THIS file moved → nothing
+    to say; a move is admitted only when every member of the WHOLE head set (`head_set`, both
+    files) is present and reads the image's X.Y."""
     if base == head:
         return []
-    head_values = {v for vs in head.values() for v in vs}
-    if image is not None and head_values == {image}:
+    missing = sorted(_SET_KEYS - set(head_set))
+    head_values = {v for vs in head_set.values() for v in vs}
+    if image is not None and not missing and head_values == {image}:
         return []
     reasons = [
         f"python version set: {key} {','.join(base.get(key, [])) or '<absent>'} → "
@@ -131,7 +143,8 @@ def _set_move_reasons(
     reasons.append(
         "python version set: a member moved, so EVERY member must read the Dockerfile's "
         f"`FROM python:` version (image: {image or '<none readable>'}; "
-        f"head members: {', '.join(f'{k}={v}' for k, vs in sorted(head.items()) for v in vs)})"
+        f"head members: {', '.join(f'{k}={v}' for k, vs in sorted(head_set.items()) for v in vs)}"
+        f"{'; missing or not in member spelling: ' + ', '.join(missing) if missing else ''})"
     )
     return reasons
 
@@ -222,12 +235,20 @@ def _pyproject_reduce(text: str) -> tuple[list[str], Counter[str], dict[str, lis
     return skeleton, names, py_set
 
 
-def check_pyproject(base: str, head: str, image: str | None = None) -> list[str]:
-    """Return the refusal reasons (empty = pin-only). `image` = the head Dockerfile's Python X.Y."""
+def head_python_set(pyproject: str, uv_lock: str) -> PySet:
+    """The Python version set's members across both head files."""
+    return {**_pyproject_reduce(pyproject)[2], **_uv_lock_reduce(uv_lock)[1]}
+
+
+def check_pyproject(
+    base: str, head: str, image: str | None = None, head_set: PySet | None = None
+) -> list[str]:
+    """Return the refusal reasons (empty = pin-only). `image` = the head Dockerfile's Python X.Y,
+    `head_set` = head_python_set() over both head files."""
     base_skel, base_names, base_py = _pyproject_reduce(base)
     head_skel, head_names, head_py = _pyproject_reduce(head)
     reasons = _skeleton_diff(base_skel, head_skel)
-    reasons += _set_move_reasons(base_py, head_py, image)
+    reasons += _set_move_reasons(base_py, head_py, image, head_set or {})
     for key, n in (head_names - base_names).items():
         reasons.append(f"+ new dependency: {key} (x{n})")
     for key, n in (base_names - head_names).items():
@@ -307,18 +328,27 @@ def _uv_lock_reduce(text: str) -> tuple[list[str], dict[str, list[str]], list[st
     return skeleton, py_set, markers
 
 
-def check_uv_lock(base: str, head: str, image: str | None = None) -> list[str]:
-    """Return the refusal reasons (empty = pin-only). `image` = the head Dockerfile's Python X.Y."""
+def check_uv_lock(
+    base: str, head: str, image: str | None = None, head_set: PySet | None = None
+) -> list[str]:
+    """Return the refusal reasons (empty = pin-only). `image` = the head Dockerfile's Python X.Y,
+    `head_set` = head_python_set() over both head files."""
     base_skel, base_py, base_markers = _uv_lock_reduce(base)
     head_skel, head_py, head_markers = _uv_lock_reduce(head)
     reasons = _skeleton_diff(base_skel, head_skel)
-    set_reasons = _set_move_reasons(base_py, head_py, image)
+    set_reasons = _set_move_reasons(base_py, head_py, image, head_set or {})
     reasons += set_reasons
-    if base_markers != head_markers and (base_py == head_py or set_reasons):
-        reasons.append(
-            "python resolution-markers changed without an admitted requires-python move: "
-            f"{base_markers} → {head_markers}"
-        )
+    if base_markers != head_markers:
+        if base_py == head_py or set_reasons:
+            reasons.append(
+                "python resolution-markers changed without an admitted requires-python move: "
+                f"{base_markers} → {head_markers}"
+            )
+        elif not set(head_markers) <= set(base_markers):
+            reasons.append(
+                "python resolution-markers may only collapse with a floor move, never fork: "
+                f"+ {sorted(set(head_markers) - set(base_markers))}"
+            )
     return reasons
 
 
@@ -342,19 +372,21 @@ def _skeleton_diff(base: list[str], head: list[str]) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) not in (4, 5) or argv[1] not in ("pyproject", "uv-lock"):
+    if len(argv) not in (4, 7) or argv[1] not in ("pyproject", "uv-lock"):
         print(__doc__, file=sys.stderr)
         return 2
-    kind, base_path, head_path = argv[1], Path(argv[2]), Path(argv[3])
-    base = base_path.read_text(encoding="utf-8") if base_path.exists() else ""
-    head = head_path.read_text(encoding="utf-8") if head_path.exists() else ""
-    docker_path = Path(argv[4]) if len(argv) == 5 else None
-    dockerfile = (
-        docker_path.read_text(encoding="utf-8") if docker_path and docker_path.exists() else None
-    )
-    image = image_python_version(dockerfile)
+
+    def read(path: str) -> str | None:
+        return Path(path).read_text(encoding="utf-8") if Path(path).exists() else None
+
+    kind = argv[1]
+    base, head = read(argv[2]) or "", read(argv[3]) or ""
+    image, head_set = None, {}
+    if len(argv) == 7:
+        image = image_python_version(read(argv[4]))
+        head_set = head_python_set(read(argv[5]) or "", read(argv[6]) or "")
     check = check_pyproject if kind == "pyproject" else check_uv_lock
-    reasons = check(base, head, image)
+    reasons = check(base, head, image, head_set)
     if reasons:
         for r in reasons[:20]:
             print(r, file=sys.stderr)

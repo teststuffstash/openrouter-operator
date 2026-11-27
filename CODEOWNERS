@@ -50,7 +50,8 @@
 # The dep files are un-owned too, with a REPLACEMENT owner: scripts/deps-pin-guard.sh in the
 # required `ci` check admits only version/hash lines of EXISTING packages (devbox.json/lock since
 # 2026-08-11; pyproject.toml/uv.lock since 2026-09-27 — scripts/deps_pin_shape.py is the
-# contract: a new or removed package, requires-python or a tool-table edit is refused, and with
+# contract: a new or removed package, a tool-table edit, or a Python-version-set member moved
+# other than as the whole set onto the Dockerfile's `FROM python:X.Y` is refused, and with
 # nothing left to own the refusal parks on the operator's admin merge, as #90 did). Since
 # 2026-10-13 that shape test also runs when the PR touches other un-owned paths (a worker's
 # adaptation of a Renovate bump: lock refresh + Dockerfile); only an OWNED path in the PR puts the

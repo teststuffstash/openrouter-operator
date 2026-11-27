@@ -7,8 +7,29 @@ contract are all exercised end to end. Expected verdicts come from the contract 
 header comments, not from running the code: a guarded file changes only under a human code-owner
 review (the PR also touches an OWNED path) or with a pin-only shape — pin material = version
 constraints / resolver hashes of EXISTING packages; everything else (new/removed package,
-requires-python, tool tables, a new [[package]]) is structure → refused, exit 1,
+a lone requires-python move, tool tables, a new [[package]]) is structure → refused, exit 1,
 `deps-pin-guard: FAIL`; guarded + another UN-owned lane's file → refused.
+
+The Python version SET (requires-python, ruff target-version, mypy python_version, uv.lock's
+requires-python) is pin material only as a whole: every member at the head reads ONE X.Y, equal to
+the head Dockerfile's `FROM python:X.Y`, the set read across BOTH head files (deps_pin_shape.py
+docstring). Decision table:
+
+| row | head | expect |
+|---|---|---|
+| whole set → image X.Y (+ uv.lock: markers collapse, wheels emptied) | all 3.15 | pass |
+| set converges, one member already at the image | mypy was 3.15 | pass |
+| only requires-python moved | image 3.15 | fail |
+| set moved to an X.Y ≠ image | set 3.16, image 3.15 | fail |
+| set move + another structural edit | + line-length | fail |
+| set move, no readable image tag | `FROM python` / stages disagree | fail |
+| set member in a non-member spelling | `>=3.15,<4` | fail |
+| uv.lock requires-python ≠ image | lock 3.16 | fail |
+| uv.lock markers change without a requires-python move | | fail |
+| only uv.lock's floor moved (pyproject at 3.14) | image 3.15 | fail |
+| pyproject set moved, uv.lock floor left behind | image 3.15 | fail |
+| a member in another spelling at base, the rest move | `>=3.14,<4` | fail |
+| a new marker fork beside an admitted move | `3.16` split | fail |
 """
 
 from __future__ import annotations
@@ -44,6 +65,10 @@ dev = [
 
 [tool.ruff]
 line-length = 100
+target-version = "py314"
+
+[tool.mypy]
+python_version = "3.14"
 
 [build-system]
 requires = ["hatchling"]
@@ -135,6 +160,7 @@ BASE_FILES = {
     ".pre-commit-config.yaml": "repos: []\n",
     ".github/workflows/ci.yaml": "on: push\n",
     "src/demo.py": "X = 1\n",
+    "Dockerfile": "FROM python:3.14-slim\n",
 }
 
 
@@ -519,3 +545,226 @@ def test_deleting_a_guarded_file_is_refused(tmp_path: pathlib.Path, path: str) -
     r = _run_guard(repo, base, head)
     assert r.returncode == 1
     assert "deps-pin-guard: FAIL" in r.stderr
+
+
+# ── the Python version set: pin material only as a whole, onto the image's X.Y ─────────────────
+
+_IMAGE_315 = "FROM python:3.15-slim\n"
+
+
+def _py_set(text: str, xy: str) -> str:
+    """Move every pyproject member of the fixture's Python version set (3.14) to `xy`."""
+    return (
+        text.replace('requires-python = ">=3.14"', f'requires-python = ">={xy}"')
+        .replace('target-version = "py314"', f'target-version = "py{xy.replace(".", "")}"')
+        .replace('python_version = "3.14"', f'python_version = "{xy}"')
+    )
+
+
+def _lock_at(xy: str) -> str:
+    """The fixture lock with its header requires-python (the lock's set member) at `xy`."""
+    return UV_LOCK.replace('requires-python = ">=3.14"', f'requires-python = ">={xy}"')
+
+
+# The uv fork a 3.14 floor carries when some package splits at 3.15 (openrouter-operator#123's
+# base): raising the floor to 3.15 collapses it — the block disappears.
+_UV_FORKED = UV_LOCK.replace(
+    'requires-python = ">=3.14"\n',
+    'requires-python = ">=3.14"\n'
+    "resolution-markers = [\n"
+    "    \"python_full_version >= '3.15'\",\n"
+    "    \"python_full_version < '3.15'\",\n"
+    "]\n",
+)
+
+
+def test_whole_python_set_onto_the_image_version_is_admitted(tmp_path: pathlib.Path) -> None:
+    # #123's shape: Renovate moved the image to 3.15; the follow-up moves requires-python, the ruff
+    # target, mypy, re-locks (floor 3.15, the marker fork collapses, a cp314-only package keeps its
+    # sdist but no wheels). Every member at the head reads 3.15 == the image → pass.
+    repo, _ = _make_repo(tmp_path)
+    _write(repo, {"uv.lock": _UV_FORKED})
+    base = _commit_all(repo, "forked lock")
+    head_lock = UV_LOCK.replace('">=3.14"', '">=3.15"').replace(
+        "wheels = [\n" + _WHEEL_140 + "\n]\n", ""
+    )
+    _write(
+        repo,
+        {
+            "pyproject.toml": _py_set(PYPROJECT, "3.15"),
+            "uv.lock": head_lock,
+            "Dockerfile": _IMAGE_315,
+        },
+    )
+    r = _run_guard(repo, base, _commit_all(repo, "head"))
+    assert r.returncode == 0, r.stderr
+    assert "pure dep-pin diff" in r.stdout
+
+
+def test_python_set_converging_with_a_member_already_at_the_image_is_admitted(
+    tmp_path: pathlib.Path,
+) -> None:
+    # The real base: mypy already read 3.15, requires-python + ruff + the lock lagged at 3.14.
+    # Only the laggards move; the head set is {3.15} == the image (already 3.15 at base) → pass.
+    repo, _ = _make_repo(tmp_path)
+    _write(
+        repo,
+        {
+            "pyproject.toml": PYPROJECT.replace(
+                'python_version = "3.14"', 'python_version = "3.15"'
+            ),
+            "Dockerfile": _IMAGE_315,
+        },
+    )
+    base = _commit_all(repo, "image + mypy at 3.15")
+    _write(repo, {"pyproject.toml": _py_set(PYPROJECT, "3.15"), "uv.lock": _lock_at("3.15")})
+    r = _run_guard(repo, base, _commit_all(repo, "head"))
+    assert r.returncode == 0, r.stderr
+
+
+def test_only_requires_python_moved_is_refused(tmp_path: pathlib.Path) -> None:
+    # requires-python 3.15 but ruff/mypy still 3.14: the head set is {3.14, 3.15} → refused, even
+    # with the image at 3.15.
+    head = PYPROJECT.replace('">=3.14"', '">=3.15"')
+    r = _verdict(tmp_path, {"pyproject.toml": head, "Dockerfile": _IMAGE_315})
+    assert r.returncode == 1
+    assert "python version set: project/requires-python 3.14 → 3.15" in r.stderr
+    assert "image: 3.15" in r.stderr
+
+
+def test_python_set_moved_to_a_version_other_than_the_image_is_refused(
+    tmp_path: pathlib.Path,
+) -> None:
+    # A consistent set at 3.16 while the image reads 3.15: not the set converging on the image.
+    r = _verdict(tmp_path, {"pyproject.toml": _py_set(PYPROJECT, "3.16"), "Dockerfile": _IMAGE_315})
+    assert r.returncode == 1
+    assert "image: 3.15" in r.stderr and "tool.ruff/target-version 3.14 → 3.16" in r.stderr
+
+
+def test_python_set_move_plus_another_structural_edit_is_refused(tmp_path: pathlib.Path) -> None:
+    # The set move is pin material; the line-length edit beside it is still structure.
+    head = _py_set(PYPROJECT, "3.15").replace("line-length = 100", "line-length = 120")
+    r = _verdict(
+        tmp_path, {"pyproject.toml": head, "uv.lock": _lock_at("3.15"), "Dockerfile": _IMAGE_315}
+    )
+    assert r.returncode == 1
+    assert "line-length" in r.stderr
+    assert "python version set" not in r.stderr
+
+
+@pytest.mark.parametrize(
+    "dockerfile",
+    [
+        None,  # the repo has no Dockerfile at head
+        "FROM python\n",  # no X.Y tag
+        "FROM python:3.15-slim AS build\nFROM python:3.14-slim\n",  # stages disagree
+    ],
+    ids=["no-dockerfile", "untagged", "stages-disagree"],
+)
+def test_python_set_move_without_one_readable_image_version_is_refused(
+    tmp_path: pathlib.Path, dockerfile: str | None
+) -> None:
+    repo, base = _make_repo(tmp_path)
+    if dockerfile is None:
+        (repo / "Dockerfile").unlink()
+    else:
+        _write(repo, {"Dockerfile": dockerfile})
+    _write(repo, {"pyproject.toml": _py_set(PYPROJECT, "3.15"), "uv.lock": _lock_at("3.15")})
+    r = _run_guard(repo, base, _commit_all(repo, "head"))
+    assert r.returncode == 1
+    assert "image: <none readable>" in r.stderr
+
+
+def test_python_set_member_in_another_spelling_is_refused(tmp_path: pathlib.Path) -> None:
+    # `">=3.15,<4"` is not the member spelling: the line stays structure (fail closed).
+    head = _py_set(PYPROJECT, "3.15").replace('">=3.15"', '">=3.15,<4"')
+    r = _verdict(tmp_path, {"pyproject.toml": head, "Dockerfile": _IMAGE_315})
+    assert r.returncode == 1
+    assert 'requires-python = ">=3.15,<4"' in r.stderr
+
+
+def test_uv_lock_requires_python_off_the_image_is_refused(tmp_path: pathlib.Path) -> None:
+    head_lock = UV_LOCK.replace('">=3.14"', '">=3.16"')
+    r = _verdict(tmp_path, {"uv.lock": head_lock, "Dockerfile": _IMAGE_315})
+    assert r.returncode == 1
+    assert "uv.lock/requires-python 3.14 → 3.16" in r.stderr
+
+
+def test_uv_lock_markers_change_without_a_floor_move_is_refused(tmp_path: pathlib.Path) -> None:
+    # The fork block appears while requires-python stays 3.14: markers ride only an admitted move.
+    r = _verdict(tmp_path, {"uv.lock": _UV_FORKED, "Dockerfile": _IMAGE_315})
+    assert r.returncode == 1
+    assert "resolution-markers changed without an admitted requires-python move" in r.stderr
+
+
+def test_uv_lock_wheels_array_emptied_by_a_bump_is_admitted(tmp_path: pathlib.Path) -> None:
+    # A release shipping no wheel for the locked interpreter: the wheel COUNT is pin material,
+    # zero included — the `wheels = [ ]` wrapper goes with its lines.
+    head = UV_LOCK.replace('version = "1.4.0"', 'version = "1.4.1"').replace(
+        "wheels = [\n" + _WHEEL_140 + "\n]\n", ""
+    )
+    r = _verdict(tmp_path, {"uv.lock": head})
+    assert r.returncode == 0, r.stderr
+
+
+def test_only_uv_lock_floor_moved_is_refused(tmp_path: pathlib.Path) -> None:
+    # The set is judged ACROSS both head files: the lock's floor at the image's 3.15 while
+    # pyproject's three members stay 3.14 → the head set is {3.14, 3.15} → refused.
+    r = _verdict(tmp_path, {"uv.lock": _lock_at("3.15"), "Dockerfile": _IMAGE_315})
+    assert r.returncode == 1
+    assert "uv.lock/requires-python 3.14 → 3.15" in r.stderr
+    assert "project/requires-python=3.14" in r.stderr
+
+
+def test_pyproject_set_moved_with_the_lock_left_behind_is_refused(tmp_path: pathlib.Path) -> None:
+    # The reverse: pyproject's three members reach 3.15, the lock's floor stays 3.14 → refused.
+    r = _verdict(tmp_path, {"pyproject.toml": _py_set(PYPROJECT, "3.15"), "Dockerfile": _IMAGE_315})
+    assert r.returncode == 1
+    assert "uv.lock/requires-python=3.14" in r.stderr
+
+
+def test_set_member_in_another_spelling_never_joins_the_set(tmp_path: pathlib.Path) -> None:
+    # Base spells requires-python `">=3.14,<4"` (structure, so not a member); ruff, mypy and the
+    # lock move to the image's 3.15. The head member set lacks project/requires-python → refused,
+    # though every member it CAN read says 3.15.
+    repo, _ = _make_repo(tmp_path)
+    odd = PYPROJECT.replace('">=3.14"', '">=3.14,<4"')
+    _write(repo, {"pyproject.toml": odd})
+    base = _commit_all(repo, "odd spelling")
+    _write(
+        repo,
+        {
+            "pyproject.toml": _py_set(odd, "3.15"),
+            "uv.lock": _lock_at("3.15"),
+            "Dockerfile": _IMAGE_315,
+        },
+    )
+    r = _run_guard(repo, base, _commit_all(repo, "head"))
+    assert r.returncode == 1
+    assert "missing or not in member spelling: project/requires-python" in r.stderr
+
+
+def test_uv_lock_markers_fork_beside_an_admitted_move_is_refused(tmp_path: pathlib.Path) -> None:
+    # A raised floor only COLLAPSES a fork; a fork entry that appears beside the move is structure.
+    head_lock = _lock_at("3.15").replace(
+        'requires-python = ">=3.15"\n',
+        'requires-python = ">=3.15"\n'
+        "resolution-markers = [\n"
+        "    \"python_full_version >= '3.16'\",\n"
+        "    \"python_full_version < '3.16'\",\n"
+        "]\n",
+    )
+    repo, _ = _make_repo(tmp_path)
+    _write(repo, {"uv.lock": _UV_FORKED})
+    base = _commit_all(repo, "forked lock")
+    _write(
+        repo,
+        {
+            "pyproject.toml": _py_set(PYPROJECT, "3.15"),
+            "uv.lock": head_lock,
+            "Dockerfile": _IMAGE_315,
+        },
+    )
+    r = _run_guard(repo, base, _commit_all(repo, "head"))
+    assert r.returncode == 1
+    assert "may only collapse with a floor move, never fork" in r.stderr
